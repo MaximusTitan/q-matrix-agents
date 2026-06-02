@@ -1,1 +1,16 @@
+# Environment
 .env
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Google Auth — never commit these
+credentials.json
+token.json
+
+# OS
+.DS_Store
+Thumbs.db
