@@ -150,15 +150,38 @@ ANTHROPIC_API_KEY=sk-...
 
 ## Running the Pipeline
 
+**Normal run:**
 ```bash
 python orchestrator.py --board CBSE --subject Science --grade Grade8 --chapter Chapter3
 ```
 
-The orchestrator will:
-1. Pull the latest KB state from remote
-2. Check for existing concept-skill-map and prompt
-3. Run the appropriate agents
-4. Push updated KB (new prompts, maps) to remote on completion
+**Resume after escalation with human feedback:**
+```bash
+python orchestrator.py --board CBSE --subject Science --grade Grade8 --chapter Chapter3 --human-feedback "Add pressure as a concept with max 3 skills"
+```
+
+**Reject a passed CSV and encode a new rule:**
+```bash
+python orchestrator.py --reject --board CBSE --subject Science --grade Grade8 --chapter Chapter3 --reason "Max 3 skills per concept"
+```
+
+The orchestrator pulls the latest KB state at the start of every run and pushes any new files back to remote on completion.
+
+---
+
+## Human-in-the-Loop
+
+There are two moments where a human intervenes:
+
+**Moment 1 — Eval loop exhausted (3 failed attempts)**
+
+The orchestrator writes an escalation report to `q-matrix-kb/escalations/` and prints a terminal message. The human reads the report, then re-runs with `--human-feedback`. The feedback is injected into the Revision Agent as additional context for one final cycle.
+
+**Moment 2 — Human rejects a passed CSV**
+
+The human runs `--reject` with a reason. The orchestrator writes that reason as a new rule into `rulesets/{board}/{subject}/{grade}/rules.md` and re-runs the pipeline. The Eval Agent will enforce this rule automatically on all future runs for that grade.
+
+The human never edits prompts or agent code directly. All feedback enters the system as text and is encoded into the KB by the orchestrator.
 
 ---
 
