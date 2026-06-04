@@ -335,3 +335,41 @@ python orchestrator.py --board {board} --subject {subject} --grade {grade} --cha
 
     write_file(path, content)
     return path
+
+# ─── Extraction Guidance ─────────────────────────────────────────────────────
+ 
+def _extraction_guidance_path(board: str, subject: str, grade: str, chapter: str) -> str:
+    return os.path.join(
+        _textbook_path(board, subject, grade, chapter),
+        "extraction_guidance.md"
+    )
+ 
+ 
+def load_extraction_guidance(board: str, subject: str, grade: str, chapter: str) -> str | None:
+    """
+    Load human-provided extraction guidance for a specific chapter, if it exists.
+    Used by the Map Extraction Agent when re-extracting after human review.
+ 
+    Returns:
+        Guidance string if found, None otherwise.
+    """
+    path = _extraction_guidance_path(board, subject, grade, chapter)
+    if file_exists(path):
+        return read_file(path)
+    return None
+ 
+ 
+def save_extraction_guidance(
+    board: str, subject: str, grade: str, chapter: str, guidance: str
+) -> None:
+    """
+    Save human-provided extraction guidance for a specific chapter.
+    Written by the orchestrator when --re-extract flag is used.
+ 
+    Args:
+        board, subject, grade, chapter: identifiers
+        guidance: Human instruction string to constrain map extraction.
+    """
+    path = _extraction_guidance_path(board, subject, grade, chapter)
+    write_file(path, guidance)
+ 
