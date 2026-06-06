@@ -1,3 +1,5 @@
 anthropic
 pdfplumber
 python-dotenv
+fastapi
+uvicorn

@@ -191,6 +191,24 @@ This repo never writes to itself. All outputs (prompts, concept-skill-maps, CSVs
 
 ---
 
+## Live Dashboard
+
+The pipeline dashboard is a Next.js app in [`dashboard/`](dashboard/) that streams live events from the FastAPI backend via SSE.
+
+```bash
+# Terminal 1 — API backend
+uvicorn api:app --reload --port 8000
+
+# Terminal 2 — Dashboard UI
+cd dashboard && npm run dev
+```
+
+Open **http://localhost:3000**. API requests are proxied to FastAPI on port 8000 via Next.js rewrites.
+
+The legacy single-file UI in [`static/index.html`](static/index.html) is deprecated.
+
+---
+
 ## Project Status
 
 | Component | Status |

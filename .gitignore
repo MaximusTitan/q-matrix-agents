@@ -14,3 +14,8 @@ token.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Next.js dashboard
+dashboard/node_modules/
+dashboard/.next/
+dashboard/.env.local

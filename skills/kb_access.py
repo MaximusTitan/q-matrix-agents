@@ -267,22 +267,82 @@ def write_escalation(
     failed_check: str,
     attempts: int,
     last_csv: str,
-    last_feedback: dict,
-    last_prompt: str,
+    attempt_history: list[dict],
 ) -> str:
     """
-    Write an escalation report to the KB escalations folder.
+    Write an escalation report folder to the KB escalations directory.
+
+    Folder structure:
+        escalations/{board}_{subject}_{grade}_{chapter}_{date}/
+            report.md           ← human-readable summary with full feedback history
+            attempt_1_prompt.md ← prompt used in attempt 1
+            attempt_2_prompt.md ← prompt used in attempt 2
+            attempt_3_prompt.md ← prompt used in attempt 3
+            last_csv.csv        ← final generated CSV
+
+    Args:
+        attempt_history: List of dicts, one per attempt:
+            {
+                "attempt":    int,
+                "input_type": str,
+                "check1":     { "passed": bool, "feedback": list },
+                "check2":     { "passed": bool, "feedback": list,
+                                "missing_concepts": list, "missing_skills": list },
+                "prompt":     str,
+            }
 
     Returns:
-        The path where the escalation file was written.
+        Path to the escalation folder.
     """
-    path = _escalation_path(board, subject, grade, chapter, date)
+    safe_chapter = chapter.replace(" ", "_")
+    safe_grade   = grade.replace(" ", "_")
+    folder_name  = f"{board}_{subject}_{safe_grade}_{safe_chapter}_{date}"
+    folder_path  = os.path.join(KB_ROOT, "escalations", folder_name)
+    create_directory(folder_path)
 
-    missing_concepts = last_feedback.get("missing_concepts", [])
-    missing_skills   = last_feedback.get("missing_skills", [])
-    feedback_text    = last_feedback.get("feedback", [])
+    # ── Write individual prompt files ─────────────────────────────────────────
+    for entry in attempt_history:
+        n = entry["attempt"]
+        prompt_path = os.path.join(folder_path, f"attempt_{n}_prompt.md")
+        write_file(prompt_path, entry.get("prompt", ""))
 
-    content = f"""# Escalation Report
+    # ── Write last CSV ────────────────────────────────────────────────────────
+    csv_path = os.path.join(folder_path, "last_csv.csv")
+    write_file(csv_path, last_csv)
+
+    # ── Build report.md ───────────────────────────────────────────────────────
+    history_sections = []
+    for entry in attempt_history:
+        n          = entry["attempt"]
+        input_type = entry.get("input_type", "unknown")
+        c1         = entry.get("check1", {})
+        c2         = entry.get("check2", {})
+
+        c1_status = "✓ PASSED" if c1.get("passed") else "✗ FAILED"
+        c2_status = "✓ PASSED" if c2.get("passed") else "✗ FAILED"
+
+        c1_feedback = "\n".join(f"  - {f}" for f in c1.get("feedback", [])) or "  None"
+        c2_feedback = "\n".join(f"  - {f}" for f in c2.get("feedback", [])) or "  None"
+
+        missing_concepts = ", ".join(c2.get("missing_concepts", [])) or "None"
+        missing_skills   = ", ".join(c2.get("missing_skills",   [])) or "None"
+
+        history_sections.append(f"""### Attempt {n} (input_type: {input_type})
+
+**Prompt used:** see `attempt_{n}_prompt.md`
+
+**Check 1 — Universal Rules:** {c1_status}
+{c1_feedback}
+
+**Check 2 — CSM Coverage:** {c2_status}
+{c2_feedback}
+Missing concepts: {missing_concepts}
+Missing skills:   {missing_skills}
+""")
+
+    history_text = "\n---\n\n".join(history_sections)
+
+    report = f"""# Escalation Report
 
 **Board:** {board}
 **Subject:** {subject}
@@ -290,66 +350,65 @@ def write_escalation(
 **Chapter:** {chapter}
 **Date:** {date}
 **Failed Check:** {failed_check}
-**Attempts:** {attempts}
+**Total Attempts:** {attempts}
 
 ---
 
-## Last Generated CSV
+## Attempt History
 
-```
-{last_csv}
-```
-
+{history_text}
 ---
 
-## Feedback From Last Eval
+## Final CSV
 
-{chr(10).join(f"- {f}" for f in feedback_text)}
-
-**Missing Concepts:** {", ".join(missing_concepts) if missing_concepts else "None"}
-**Missing Skills:** {", ".join(missing_skills) if missing_skills else "None"}
-
----
-
-## Last Prompt Used
-
-```
-{last_prompt}
-```
+See `last_csv.csv` in this folder.
 
 ---
 
 ## What To Do
 
-1. Review the CSV and feedback above
-2. Re-run with your guidance:
+Review the attempt history above, then choose an action:
 
+**Option A — Resume with human feedback:**
 ```
-python orchestrator.py --board {board} --subject {subject} --grade {grade} --chapter {chapter} --human-feedback "your instructions here"
+python orchestrator.py --board "{board}" --subject "{subject}" --grade "{grade}" --chapter "{chapter}" --human-feedback "your instructions here"
+```
+
+**Option B — Re-extract the concept-skill-map:**
+```
+python orchestrator.py --board "{board}" --subject "{subject}" --grade "{grade}" --chapter "{chapter}" --re-extract --map-guidance "your guidance here"
+```
+
+**Option C — Reject with a new grade rule:**
+```
+python orchestrator.py --reject --board "{board}" --subject "{subject}" --grade "{grade}" --chapter "{chapter}" --reason "your rule here"
 ```
 
 ## Human Feedback
 
-<!-- Add your instructions here -->
+<!-- Add your notes here before re-running -->
 """
 
-    write_file(path, content)
-    return path
+    report_path = os.path.join(folder_path, "report.md")
+    write_file(report_path, report)
+
+    return folder_path
+
 
 # ─── Extraction Guidance ─────────────────────────────────────────────────────
- 
+
 def _extraction_guidance_path(board: str, subject: str, grade: str, chapter: str) -> str:
     return os.path.join(
         _textbook_path(board, subject, grade, chapter),
         "extraction_guidance.md"
     )
- 
- 
+
+
 def load_extraction_guidance(board: str, subject: str, grade: str, chapter: str) -> str | None:
     """
     Load human-provided extraction guidance for a specific chapter, if it exists.
     Used by the Map Extraction Agent when re-extracting after human review.
- 
+
     Returns:
         Guidance string if found, None otherwise.
     """
@@ -357,19 +416,18 @@ def load_extraction_guidance(board: str, subject: str, grade: str, chapter: str)
     if file_exists(path):
         return read_file(path)
     return None
- 
- 
+
+
 def save_extraction_guidance(
     board: str, subject: str, grade: str, chapter: str, guidance: str
 ) -> None:
     """
     Save human-provided extraction guidance for a specific chapter.
     Written by the orchestrator when --re-extract flag is used.
- 
+
     Args:
         board, subject, grade, chapter: identifiers
         guidance: Human instruction string to constrain map extraction.
     """
     path = _extraction_guidance_path(board, subject, grade, chapter)
     write_file(path, guidance)
- 

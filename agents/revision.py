@@ -8,8 +8,10 @@ Two modes:
     subject — revising toward a subject-level base_prompt.md
     grade   — revising toward a grade-specific prompt.md
 
-Input:  current_prompt, feedback, failed_check, mode, board, subject,
-        grade (required for grade mode), human_feedback (optional)
+failed_check can be "check1", "check2", or "both" since both checks
+run in parallel and may fail simultaneously.
+
+Input:  current_prompt, feedback, failed_check, mode, human_feedback (optional)
 Output: revised_prompt (str)
 
 Skills used:
@@ -19,7 +21,6 @@ Skills used:
 import os
 from skills.llm import call_llm
 
-# Load the revision system prompt
 _PROMPT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "prompts", "revision_prompt.md"
@@ -42,7 +43,8 @@ def run(
     Args:
         current_prompt: The prompt that was used and failed.
         feedback:       List of specific violations from the Eval Agent.
-        failed_check:   "check1" or "check2"
+                        Items are prefixed with [Check 1] or [Check 2].
+        failed_check:   "check1", "check2", or "both"
         mode:           "subject" or "grade"
         human_feedback: Optional additional guidance from a human reviewer.
 
@@ -54,8 +56,8 @@ def run(
     """
     if mode not in ("subject", "grade"):
         raise ValueError(f"Invalid mode: {mode}. Must be 'subject' or 'grade'.")
-    if failed_check not in ("check1", "check2"):
-        raise ValueError(f"Invalid failed_check: {failed_check}. Must be 'check1' or 'check2'.")
+    if failed_check not in ("check1", "check2", "both"):
+        raise ValueError(f"Invalid failed_check: {failed_check}. Must be 'check1', 'check2', or 'both'.")
 
     print(f"[revision] Starting — mode: {mode}, failed_check: {failed_check}")
 
@@ -75,7 +77,6 @@ def run(
 4. feedback:
 {feedback_text}{human_section}"""
 
-    revised_prompt = call_llm(SYSTEM_PROMPT, user_content)
-    print(f"[revision] Revised prompt generated ({len(revised_prompt)} chars)")
-
-    return revised_prompt.strip()
+    revised = call_llm(SYSTEM_PROMPT, user_content)
+    print(f"[revision] Revised prompt generated ({len(revised)} chars)")
+    return revised.strip()
