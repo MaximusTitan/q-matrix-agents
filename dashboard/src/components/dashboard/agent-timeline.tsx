@@ -22,8 +22,10 @@ const AGENT_COLORS: Record<string, string> = {
   "Map Extraction + Generator": "var(--qm-blue)",
 };
 
-// Keys filtered from the generic IO display
-const EXCLUDED_KEYS = new Set(["csv", "prompt", "csv_preview"]);
+// Keys filtered from the generic IO display (handled by dedicated sub-components)
+const EXCLUDED_KEYS = new Set([
+  "csv", "prompt", "csv_preview", "base_prompt", "revised_prompt",
+]);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -109,9 +111,7 @@ function IOSection({
           )}
         </>
       ) : (
-        <div
-          className="thin-scroll max-h-48 overflow-y-auto rounded bg-secondary/60"
-        >
+        <div className="thin-scroll max-h-48 overflow-y-auto rounded bg-secondary/60">
           <pre className="p-2 text-[10px] leading-relaxed whitespace-pre-wrap break-all">
             {JSON.stringify(Object.fromEntries(entries), null, 2)}
           </pre>
@@ -134,6 +134,49 @@ function IOSection({
   );
 }
 
+// ── TextExpandEntry — reusable expandable text block ─────────────────────────
+
+function TextExpandEntry({
+  label,
+  text,
+  accentColor = "var(--qm-blue)",
+}: {
+  label: string;
+  text: string;
+  accentColor?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const preview = text.slice(0, 120).trimEnd() + (text.length > 120 ? "…" : "");
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="text-[11px] leading-relaxed">
+        <span className="text-muted-foreground">{label}:</span>{" "}
+        <span style={{ color: accentColor, opacity: 0.8 }}>{preview}</span>
+      </div>
+
+      <button
+        onClick={() => setOpen((p) => !p)}
+        className="flex items-center gap-0.5 text-[10px] text-primary/70 hover:text-primary transition-colors w-fit"
+      >
+        {open ? (
+          <><ChevronUp className="h-3 w-3" /> Collapse {label}</>
+        ) : (
+          <><ChevronDown className="h-3 w-3" /> Expand {label}</>
+        )}
+      </button>
+
+      {open && (
+        <div className="thin-scroll mt-1 max-h-64 overflow-y-auto rounded border border-border bg-secondary/60">
+          <pre className="p-2 text-[10px] leading-relaxed whitespace-pre-wrap break-words">
+            {text}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── CSV inline preview (Generator card) ───────────────────────────────────────
 
 function CsvInlineEntry({ csvText }: { csvText: string }) {
@@ -146,7 +189,6 @@ function CsvInlineEntry({ csvText }: { csvText: string }) {
 
   return (
     <div className="flex flex-col gap-1">
-      {/* Always-visible entry row */}
       <div className="text-[11px] leading-relaxed">
         <span className="text-muted-foreground">csv_preview:</span>{" "}
         <span className="text-[var(--qm-green)]">{rowCount} row{rowCount !== 1 ? "s" : ""}</span>
@@ -200,6 +242,91 @@ function CsvInlineEntry({ csvText }: { csvText: string }) {
   );
 }
 
+// ── MapExtractionCard ─────────────────────────────────────────────────────────
+
+function MapExtractionCard({ agent }: { agent: AgentRecord }) {
+  const color = AGENT_COLORS[agent.name] ?? "var(--qm-blue)";
+  const icon = AGENT_ICONS[agent.name] ?? "●";
+  const inp = agent.input as Record<string, unknown>;
+  const out = agent.output as Record<string, unknown> | null;
+
+  const guidance =
+    typeof inp.guidance === "string" ? inp.guidance : null;
+
+  return (
+    <Card className="border-border bg-card py-0">
+      <CardHeader className="flex flex-row items-center gap-3 border-b border-border px-4 py-2.5">
+        <div
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-sm"
+          style={{ background: `${color}22`, color }}
+        >
+          {icon}
+        </div>
+        <div className="flex-1 text-xs font-bold" style={{ color }}>
+          {agent.name}
+        </div>
+        {agent.status === "running" ? (
+          <span className="text-[10px] font-bold text-[var(--qm-amber)]">
+            <span className="inline-block animate-spin">⟳</span> RUNNING
+          </span>
+        ) : (
+          <span className="text-[10px] font-bold text-[var(--qm-green)]">✓ DONE</span>
+        )}
+      </CardHeader>
+
+      <CardContent className="grid grid-cols-2 gap-4 px-4 py-3">
+        {/* Input column */}
+        <div className="flex flex-col gap-1">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+            INPUT
+          </div>
+          {(["board", "subject", "grade", "chapter"] as const).map((k) =>
+            inp[k] != null ? (
+              <div key={k} className="text-[11px] leading-relaxed">
+                <span className="text-muted-foreground">{k}:</span>{" "}
+                <span>{String(inp[k])}</span>
+              </div>
+            ) : null
+          )}
+          {guidance && (
+            <TextExpandEntry label="guidance" text={guidance} accentColor={color} />
+          )}
+        </div>
+
+        {/* Output column */}
+        {out ? (
+          <div className="flex flex-col gap-1">
+            <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              OUTPUT
+            </div>
+            {out.concepts != null && (
+              <div className="text-[11px] leading-relaxed">
+                <span className="text-muted-foreground">concepts:</span>{" "}
+                <span className="text-[var(--qm-green)] font-semibold">
+                  {String(out.concepts)} extracted
+                </span>
+              </div>
+            )}
+            {out.skills != null && (
+              <div className="text-[11px] leading-relaxed">
+                <span className="text-muted-foreground">skills:</span>{" "}
+                <span className="text-[var(--qm-green)] font-semibold">
+                  {String(out.skills)} extracted
+                </span>
+              </div>
+            )}
+            <div className="mt-1 text-[10px] text-muted-foreground italic">
+              Saved to knowledge base
+            </div>
+          </div>
+        ) : (
+          <div />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── AgentCard ─────────────────────────────────────────────────────────────────
 
 function AgentCard({ agent }: { agent: AgentRecord }) {
@@ -210,6 +337,25 @@ function AgentCard({ agent }: { agent: AgentRecord }) {
     agent.output &&
     typeof (agent.output as Record<string, unknown>).csv_preview === "string"
       ? (agent.output as Record<string, unknown>).csv_preview as string
+      : null;
+
+  const generatorPrompt =
+    agent.name === "Generator" &&
+    typeof (agent.input as Record<string, unknown>).prompt === "string"
+      ? (agent.input as Record<string, unknown>).prompt as string
+      : null;
+
+  const generatorBasePrompt =
+    agent.name === "Generator" &&
+    typeof (agent.input as Record<string, unknown>).base_prompt === "string"
+      ? (agent.input as Record<string, unknown>).base_prompt as string
+      : null;
+
+  const revisedPrompt =
+    agent.name === "Revision" &&
+    agent.output &&
+    typeof (agent.output as Record<string, unknown>).revised_prompt === "string"
+      ? (agent.output as Record<string, unknown>).revised_prompt as string
       : null;
 
   return (
@@ -234,13 +380,25 @@ function AgentCard({ agent }: { agent: AgentRecord }) {
       </CardHeader>
 
       <CardContent className="grid grid-cols-2 gap-4 px-4 py-3">
-        <IOSection data={agent.input} label="INPUT" />
+        {/* Input column */}
+        <div className="flex flex-col gap-2">
+          <IOSection data={agent.input} label="INPUT" />
+          {generatorPrompt && (
+            <TextExpandEntry label="prompt" text={generatorPrompt} accentColor="var(--qm-blue)" />
+          )}
+          {generatorBasePrompt && (
+            <TextExpandEntry label="base_prompt" text={generatorBasePrompt} accentColor="var(--qm-blue)" />
+          )}
+        </div>
 
         {/* Output column */}
         {agent.output ? (
           <div className="flex flex-col gap-2">
             <IOSection data={agent.output} label="OUTPUT" />
             {csvPreview && <CsvInlineEntry csvText={csvPreview} />}
+            {revisedPrompt && (
+              <TextExpandEntry label="revised_prompt" text={revisedPrompt} accentColor="var(--qm-purple)" />
+            )}
           </div>
         ) : (
           <div />
@@ -251,6 +409,8 @@ function AgentCard({ agent }: { agent: AgentRecord }) {
 }
 
 // ── AttemptGroup ──────────────────────────────────────────────────────────────
+
+const MAP_EXTRACTION_NAMES = new Set(["Map Extraction", "Map Extraction + Generator"]);
 
 function cycleStatus(agents: AgentRecord[]): "running" | "done" | "failed" {
   if (agents.some((a) => a.status === "running")) return "running";
@@ -319,9 +479,13 @@ function AttemptGroup({
         <div className="relative border-t border-border pl-4">
           <div className="absolute left-[1.4rem] top-0 bottom-0 w-px bg-border" />
           <div className="space-y-3 py-3 pr-3">
-            {agents.map((agent, i) => (
-              <AgentCard key={`${agent.name}-${agent.attempt}-${i}`} agent={agent} />
-            ))}
+            {agents.map((agent, i) =>
+              MAP_EXTRACTION_NAMES.has(agent.name) ? (
+                <MapExtractionCard key={`${agent.name}-${agent.attempt}-${i}`} agent={agent} />
+              ) : (
+                <AgentCard key={`${agent.name}-${agent.attempt}-${i}`} agent={agent} />
+              )
+            )}
           </div>
         </div>
       )}

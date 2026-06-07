@@ -1,0 +1,372 @@
+{
+  "D:\\work\\q-matrix-agents\\.claude\\settings.local.json": {
+    "mtime": 1780494982.7384443,
+    "ast_hash": "b268769a679181d4a6f67b0aa94f5e3b",
+    "semantic_hash": "b268769a679181d4a6f67b0aa94f5e3b"
+  },
+  "D:\\work\\q-matrix-agents\\.graphify_detect.json": {
+    "mtime": 1780726471.0414915,
+    "ast_hash": "c83c111eced70e0082f1c84d73bfe4ef",
+    "semantic_hash": "c83c111eced70e0082f1c84d73bfe4ef"
+  },
+  "D:\\work\\q-matrix-agents\\agents\\__init__.py": {
+    "mtime": 1780670803.4166713,
+    "ast_hash": "5fe9f25eedad48c94d0c6e6e490e09fc",
+    "semantic_hash": "5fe9f25eedad48c94d0c6e6e490e09fc"
+  },
+  "D:\\work\\q-matrix-agents\\agents\\eval.py": {
+    "mtime": 1780678439.782603,
+    "ast_hash": "a7310a538f1e185cb30e19eabdfaa3ab",
+    "semantic_hash": "a7310a538f1e185cb30e19eabdfaa3ab"
+  },
+  "D:\\work\\q-matrix-agents\\agents\\generator.py": {
+    "mtime": 1780497581.6068842,
+    "ast_hash": "a5b50f99410e16c52a90c68fd6b7068d",
+    "semantic_hash": "a5b50f99410e16c52a90c68fd6b7068d"
+  },
+  "D:\\work\\q-matrix-agents\\agents\\map_extraction.py": {
+    "mtime": 1780581991.011453,
+    "ast_hash": "4caa7da368692b85fee6cc562d6198bf",
+    "semantic_hash": "4caa7da368692b85fee6cc562d6198bf"
+  },
+  "D:\\work\\q-matrix-agents\\agents\\revision.py": {
+    "mtime": 1780678985.6825247,
+    "ast_hash": "f9209bb1b9013111f8157b1192e0100c",
+    "semantic_hash": "f9209bb1b9013111f8157b1192e0100c"
+  },
+  "D:\\work\\q-matrix-agents\\api.py": {
+    "mtime": 1780719739.7255862,
+    "ast_hash": "c4be220f93ee8d0769d7a7c95b64ad5a",
+    "semantic_hash": "c4be220f93ee8d0769d7a7c95b64ad5a"
+  },
+  "D:\\work\\q-matrix-agents\\check_docs.py": {
+    "mtime": 1780580268.3992493,
+    "ast_hash": "b6299da96d92d794dbf127ec88037ead",
+    "semantic_hash": "b6299da96d92d794dbf127ec88037ead"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\components.json": {
+    "mtime": 1780719441.2493916,
+    "ast_hash": "fc5c9e9a7b93eeb2f7b4e1ce0959e4a6",
+    "semantic_hash": "fc5c9e9a7b93eeb2f7b4e1ce0959e4a6"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\eslint.config.mjs": {
+    "mtime": 1780719227.8996868,
+    "ast_hash": "dfa1f5f6a7037bf39dc510f30b180002",
+    "semantic_hash": "dfa1f5f6a7037bf39dc510f30b180002"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\next-env.d.ts": {
+    "mtime": 1780722443.8846624,
+    "ast_hash": "2a74d3909800ca5467fa83b0ab4a4890",
+    "semantic_hash": "2a74d3909800ca5467fa83b0ab4a4890"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\next.config.ts": {
+    "mtime": 1780719570.6823454,
+    "ast_hash": "9c757a1815050d7a8226362fe73b05d1",
+    "semantic_hash": "9c757a1815050d7a8226362fe73b05d1"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\package.json": {
+    "mtime": 1780722185.3025403,
+    "ast_hash": "6ec214a2df514264c83da3c05df2010e",
+    "semantic_hash": "6ec214a2df514264c83da3c05df2010e"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\postcss.config.mjs": {
+    "mtime": 1780719227.9347281,
+    "ast_hash": "239f3ebf717465dc636818a1a619398d",
+    "semantic_hash": "239f3ebf717465dc636818a1a619398d"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\app\\layout.tsx": {
+    "mtime": 1780719580.712403,
+    "ast_hash": "81a429a5add3c6981f4befe68643abbc",
+    "semantic_hash": "81a429a5add3c6981f4befe68643abbc"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\app\\page.tsx": {
+    "mtime": 1780719602.877386,
+    "ast_hash": "75e0c37c2bfbc459e5a50d20be93ffb8",
+    "semantic_hash": "75e0c37c2bfbc459e5a50d20be93ffb8"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\dashboard\\agent-timeline.tsx": {
+    "mtime": 1780723817.5393224,
+    "ast_hash": "bdcfc24987ec9f8f2f239120e8b8480b",
+    "semantic_hash": "bdcfc24987ec9f8f2f239120e8b8480b"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\dashboard\\csv-preview.tsx": {
+    "mtime": 1780723093.1022856,
+    "ast_hash": "9f549ae144b8c0a651f1a60ed9ebe46e",
+    "semantic_hash": "9f549ae144b8c0a651f1a60ed9ebe46e"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\dashboard\\escalation-panel.tsx": {
+    "mtime": 1780724893.8625622,
+    "ast_hash": "0e174dbeb5924851c953a3c14d5d9760",
+    "semantic_hash": "0e174dbeb5924851c953a3c14d5d9760"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\dashboard\\header.tsx": {
+    "mtime": 1780719585.276932,
+    "ast_hash": "4a9166d05683fcd8b3cb794a4916b60a",
+    "semantic_hash": "4a9166d05683fcd8b3cb794a4916b60a"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\dashboard\\main-panel.tsx": {
+    "mtime": 1780725951.7729325,
+    "ast_hash": "3b26e34b0519a30f9779880dcb45a37c",
+    "semantic_hash": "3b26e34b0519a30f9779880dcb45a37c"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\dashboard\\run-form.tsx": {
+    "mtime": 1780719716.9179778,
+    "ast_hash": "704ac6c74acfb542b426032db3d2f278",
+    "semantic_hash": "704ac6c74acfb542b426032db3d2f278"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\dashboard\\run-history.tsx": {
+    "mtime": 1780719591.9457538,
+    "ast_hash": "b31a6d0eec86ce60b7b67c04a990e918",
+    "semantic_hash": "b31a6d0eec86ce60b7b67c04a990e918"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\ui\\alert.tsx": {
+    "mtime": 1780719562.2305238,
+    "ast_hash": "739c28799fae98b4fa01132494788e85",
+    "semantic_hash": "739c28799fae98b4fa01132494788e85"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\ui\\badge.tsx": {
+    "mtime": 1780719561.7713938,
+    "ast_hash": "e4ec840217040d5630ee6ed7213a1d72",
+    "semantic_hash": "e4ec840217040d5630ee6ed7213a1d72"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\ui\\button.tsx": {
+    "mtime": 1780719506.4359043,
+    "ast_hash": "e04ce5251d6b0dd04020988126c905e9",
+    "semantic_hash": "e04ce5251d6b0dd04020988126c905e9"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\ui\\card.tsx": {
+    "mtime": 1780719561.5495577,
+    "ast_hash": "bd5f88ad2d983dd6c4561d63824c80ba",
+    "semantic_hash": "bd5f88ad2d983dd6c4561d63824c80ba"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\ui\\input.tsx": {
+    "mtime": 1780719560.899923,
+    "ast_hash": "0607b02d99a2e92f9509223f36ccc6ec",
+    "semantic_hash": "0607b02d99a2e92f9509223f36ccc6ec"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\ui\\label.tsx": {
+    "mtime": 1780719561.390538,
+    "ast_hash": "a70440da86bfc6a07f15197cca48cb08",
+    "semantic_hash": "a70440da86bfc6a07f15197cca48cb08"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\ui\\scroll-area.tsx": {
+    "mtime": 1780719562.025358,
+    "ast_hash": "ac8fc719d0fd13c77c933474827337da",
+    "semantic_hash": "ac8fc719d0fd13c77c933474827337da"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\ui\\select.tsx": {
+    "mtime": 1780719561.1453176,
+    "ast_hash": "ab95f478cb74d1906b07425c15b124cc",
+    "semantic_hash": "ab95f478cb74d1906b07425c15b124cc"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\ui\\separator.tsx": {
+    "mtime": 1780719562.119147,
+    "ast_hash": "3de2dca3e47ab29c4b1f632671545628",
+    "semantic_hash": "3de2dca3e47ab29c4b1f632671545628"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\ui\\tabs.tsx": {
+    "mtime": 1780719561.9282165,
+    "ast_hash": "429035bc858475cd3bcedbb08a5ba8da",
+    "semantic_hash": "429035bc858475cd3bcedbb08a5ba8da"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\components\\ui\\textarea.tsx": {
+    "mtime": 1780719561.2530403,
+    "ast_hash": "d448d2a90e48542e51b93a1189127bf2",
+    "semantic_hash": "d448d2a90e48542e51b93a1189127bf2"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\hooks\\use-pipeline.ts": {
+    "mtime": 1780719578.7333503,
+    "ast_hash": "1a89dcb4b5edf943cfeeffbeaf3c165c",
+    "semantic_hash": "1a89dcb4b5edf943cfeeffbeaf3c165c"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\hooks\\use-runs.ts": {
+    "mtime": 1780719579.2446108,
+    "ast_hash": "f1ff623efe452a02d28c44463eab9329",
+    "semantic_hash": "f1ff623efe452a02d28c44463eab9329"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\lib\\api.ts": {
+    "mtime": 1780719573.1746929,
+    "ast_hash": "8ff758eec60b313edf792e6942121a01",
+    "semantic_hash": "8ff758eec60b313edf792e6942121a01"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\lib\\pipeline-reducer.ts": {
+    "mtime": 1780719574.90829,
+    "ast_hash": "ee711d26a0fd265679bd5ea492404621",
+    "semantic_hash": "ee711d26a0fd265679bd5ea492404621"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\lib\\types.ts": {
+    "mtime": 1780719572.0073764,
+    "ast_hash": "8faa37f132766d79228722725c79bb86",
+    "semantic_hash": "8faa37f132766d79228722725c79bb86"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\src\\lib\\utils.ts": {
+    "mtime": 1780719506.7108643,
+    "ast_hash": "5a6fd53fdcf2be529e9cc0b718fde352",
+    "semantic_hash": "5a6fd53fdcf2be529e9cc0b718fde352"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\tsconfig.json": {
+    "mtime": 1780719228.4597394,
+    "ast_hash": "ee17fd1c97c735e9f3564e3f5251f125",
+    "semantic_hash": "ee17fd1c97c735e9f3564e3f5251f125"
+  },
+  "D:\\work\\q-matrix-agents\\orchestrator.py": {
+    "mtime": 1780723797.7743142,
+    "ast_hash": "d554a43a37945caaa5969c27e6d6ad83",
+    "semantic_hash": "d554a43a37945caaa5969c27e6d6ad83"
+  },
+  "D:\\work\\q-matrix-agents\\scripts\\sync_textbooks_from_drive.py": {
+    "mtime": 1780408205.6684911,
+    "ast_hash": "1808fd475fb54473e9c1e481699f351a",
+    "semantic_hash": "1808fd475fb54473e9c1e481699f351a"
+  },
+  "D:\\work\\q-matrix-agents\\skills\\__init__.py": {
+    "mtime": 1780391797.3175957,
+    "ast_hash": "d84b9d4c198b79505986e5462591917b",
+    "semantic_hash": "d84b9d4c198b79505986e5462591917b"
+  },
+  "D:\\work\\q-matrix-agents\\skills\\csv_utils.py": {
+    "mtime": 1780391187.2362828,
+    "ast_hash": "5c31f58f008a775f8ece830fd36149c1",
+    "semantic_hash": "5c31f58f008a775f8ece830fd36149c1"
+  },
+  "D:\\work\\q-matrix-agents\\skills\\diff.py": {
+    "mtime": 1780494407.4888916,
+    "ast_hash": "faa2048bbf1dc81ccdf091a1dce493a3",
+    "semantic_hash": "faa2048bbf1dc81ccdf091a1dce493a3"
+  },
+  "D:\\work\\q-matrix-agents\\skills\\file_io.py": {
+    "mtime": 1780391176.0045652,
+    "ast_hash": "9c4c45f71f60089829eb7421ffdde738",
+    "semantic_hash": "9c4c45f71f60089829eb7421ffdde738"
+  },
+  "D:\\work\\q-matrix-agents\\skills\\git_sync.py": {
+    "mtime": 1780391189.5134585,
+    "ast_hash": "2f049286026f70651b06e356c697bc3d",
+    "semantic_hash": "2f049286026f70651b06e356c697bc3d"
+  },
+  "D:\\work\\q-matrix-agents\\skills\\kb_access.py": {
+    "mtime": 1780678515.1481507,
+    "ast_hash": "6409fe7dc8e976e965435b18e7aecc8b",
+    "semantic_hash": "6409fe7dc8e976e965435b18e7aecc8b"
+  },
+  "D:\\work\\q-matrix-agents\\skills\\llm.py": {
+    "mtime": 1780391185.4612558,
+    "ast_hash": "76448606ca6c4e9238589e596acba675",
+    "semantic_hash": "76448606ca6c4e9238589e596acba675"
+  },
+  "D:\\work\\q-matrix-agents\\skills\\pdf_reader.py": {
+    "mtime": 1780391182.9318278,
+    "ast_hash": "1d90b30f62a9353890b22f3e2c75d012",
+    "semantic_hash": "1d90b30f62a9353890b22f3e2c75d012"
+  },
+  "D:\\work\\q-matrix-agents\\tests\\test_eval.py": {
+    "mtime": 1780503551.0278592,
+    "ast_hash": "9b48c080945b50a2cb4b8d38ee912ce0",
+    "semantic_hash": "9b48c080945b50a2cb4b8d38ee912ce0"
+  },
+  "D:\\work\\q-matrix-agents\\tests\\test_generator.py": {
+    "mtime": 1780497812.176787,
+    "ast_hash": "40651423d4b6e9244fb6985d88caae16",
+    "semantic_hash": "40651423d4b6e9244fb6985d88caae16"
+  },
+  "D:\\work\\q-matrix-agents\\tests\\test_generator_eval.py": {
+    "mtime": 1780545958.8869357,
+    "ast_hash": "833ac4773bb75f2be789f2ef85d7a052",
+    "semantic_hash": "833ac4773bb75f2be789f2ef85d7a052"
+  },
+  "D:\\work\\q-matrix-agents\\tests\\test_map_extraction.py": {
+    "mtime": 1780495009.356239,
+    "ast_hash": "c1da68ab73cffc745286870d34c7e27b",
+    "semantic_hash": "c1da68ab73cffc745286870d34c7e27b"
+  },
+  "D:\\work\\q-matrix-agents\\tests\\test_revision_loop.py": {
+    "mtime": 1780555549.2329302,
+    "ast_hash": "0cbcfc6f1748f0ca9b4029b2b2fb9793",
+    "semantic_hash": "0cbcfc6f1748f0ca9b4029b2b2fb9793"
+  },
+  "D:\\work\\q-matrix-agents\\tests\\test_skills.py": {
+    "mtime": 1780408262.0635324,
+    "ast_hash": "ca463c1ce78ff0a14a237588e26226b6",
+    "semantic_hash": "ca463c1ce78ff0a14a237588e26226b6"
+  },
+  "D:\\work\\q-matrix-agents\\utils\\__init__.py": {
+    "mtime": 1780712577.6593854,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "D:\\work\\q-matrix-agents\\utils\\events.py": {
+    "mtime": 1780712596.7101138,
+    "ast_hash": "f4f36b0a98332c106e04409c0228eabe",
+    "semantic_hash": "f4f36b0a98332c106e04409c0228eabe"
+  },
+  "D:\\work\\q-matrix-agents\\README.md": {
+    "mtime": 1780719740.2551358,
+    "ast_hash": "15976b73809b1fd9765cd051b1b43088",
+    "semantic_hash": "15976b73809b1fd9765cd051b1b43088"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\AGENTS.md": {
+    "mtime": 1780719368.0119305,
+    "ast_hash": "9e09241799026ac05be315a2f0b50055",
+    "semantic_hash": "9e09241799026ac05be315a2f0b50055"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\CLAUDE.md": {
+    "mtime": 1780719368.012929,
+    "ast_hash": "5c27369b226fcf2be8a6cfe52224e767",
+    "semantic_hash": "5c27369b226fcf2be8a6cfe52224e767"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\README.md": {
+    "mtime": 1780719227.870689,
+    "ast_hash": "f15aaa42d5d299d091b1171097ea56ad",
+    "semantic_hash": "f15aaa42d5d299d091b1171097ea56ad"
+  },
+  "D:\\work\\q-matrix-agents\\prompts\\eval_prompt.md": {
+    "mtime": 1780678470.657291,
+    "ast_hash": "3174a92a893348e62aa37c4e84bb5295",
+    "semantic_hash": "3174a92a893348e62aa37c4e84bb5295"
+  },
+  "D:\\work\\q-matrix-agents\\prompts\\generator_prompt.md": {
+    "mtime": 1780497577.409899,
+    "ast_hash": "d9ca8462a2df00a442fb6767374fd404",
+    "semantic_hash": "d9ca8462a2df00a442fb6767374fd404"
+  },
+  "D:\\work\\q-matrix-agents\\prompts\\map_extraction_prompt.md": {
+    "mtime": 1780494390.299245,
+    "ast_hash": "82e47d6b64c4595d35b0aff5a99615f9",
+    "semantic_hash": "82e47d6b64c4595d35b0aff5a99615f9"
+  },
+  "D:\\work\\q-matrix-agents\\prompts\\revision_prompt.md": {
+    "mtime": 1780678482.5779269,
+    "ast_hash": "38beeb85c30d2885e7d5653693c38775",
+    "semantic_hash": "38beeb85c30d2885e7d5653693c38775"
+  },
+  "D:\\work\\q-matrix-agents\\requirements.txt": {
+    "mtime": 1780712520.7615201,
+    "ast_hash": "d7cc86704270c936cc4da1125428ce15",
+    "semantic_hash": "d7cc86704270c936cc4da1125428ce15"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\public\\file.svg": {
+    "mtime": 1780719227.945312,
+    "ast_hash": "d09f95206c3fa0bb9bd9fefabfd0ea71",
+    "semantic_hash": "d09f95206c3fa0bb9bd9fefabfd0ea71"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\public\\globe.svg": {
+    "mtime": 1780719227.9623094,
+    "ast_hash": "2aaafa6a49b6563925fe440891e32717",
+    "semantic_hash": "2aaafa6a49b6563925fe440891e32717"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\public\\next.svg": {
+    "mtime": 1780719227.9827845,
+    "ast_hash": "8e061864f388b47f33a1c3780831193e",
+    "semantic_hash": "8e061864f388b47f33a1c3780831193e"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\public\\vercel.svg": {
+    "mtime": 1780719227.9997842,
+    "ast_hash": "c0af2f507b369b085b35ef4bbe3bcf1e",
+    "semantic_hash": "c0af2f507b369b085b35ef4bbe3bcf1e"
+  },
+  "D:\\work\\q-matrix-agents\\dashboard\\public\\window.svg": {
+    "mtime": 1780719228.015263,
+    "ast_hash": "a2760511c65806022ad20adf74370ff3",
+    "semantic_hash": "a2760511c65806022ad20adf74370ff3"
+  }
+}

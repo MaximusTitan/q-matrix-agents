@@ -150,7 +150,10 @@ def run_pipeline(
                 "agent": "Generator",
                 "parallel": False,
                 "attempt": attempt,
-                "input": {"board": board, "subject": subject, "grade": grade, "chapter": chapter},
+                "input": {
+                    "board": board, "subject": subject, "grade": grade, "chapter": chapter,
+                    "base_prompt": prompt_snapshot,
+                },
             })
             gen_result = run_generator(board, subject, grade, chapter)
 
@@ -250,9 +253,10 @@ def run_pipeline(
         emit("agent_completed", {
             "agent": "Revision",
             "output": {
-                "mode":          mode,
-                "save_mode":     save_mode,
-                "prompt_length": len(revised),
+                "mode":           mode,
+                "save_mode":      save_mode,
+                "prompt_length":  len(revised),
+                "revised_prompt": revised,
             },
         })
         print(f"[orchestrator] Saved revised prompt ({save_mode})")
