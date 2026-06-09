@@ -10,9 +10,9 @@ import { useRuns } from "@/hooks/use-runs";
 import type { RunFormValues } from "@/lib/types";
 
 const DEFAULT_FORM: RunFormValues = {
-  board: "CBSE",
+  board: "",
   subject: "",
-  grade: "Grade 8",
+  grade: "",
   chapter: "",
 };
 

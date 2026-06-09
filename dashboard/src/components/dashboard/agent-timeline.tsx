@@ -24,7 +24,7 @@ const AGENT_COLORS: Record<string, string> = {
 
 // Keys filtered from the generic IO display (handled by dedicated sub-components)
 const EXCLUDED_KEYS = new Set([
-  "csv", "prompt", "csv_preview", "base_prompt", "revised_prompt",
+  "csv", "prompt", "csv_preview", "base_prompt", "revised_prompt", "concept_skill_map",
 ]);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -72,6 +72,22 @@ function parseCSVLine(line: string): string[] {
   }
   result.push(current.trim());
   return result;
+}
+
+function parseCsvSets(csvText: string): { concepts: Set<string>; skills: Set<string> } {
+  const lines = csvText.split("\n").filter((l) => l.trim());
+  const concepts = new Set<string>();
+  const skills = new Set<string>();
+  if (lines.length < 2) return { concepts, skills };
+  const headers = parseCSVLine(lines[0]);
+  const conceptIdx = headers.findIndex((h) => h.toLowerCase() === "concept");
+  const skillIdx = headers.findIndex((h) => h.toLowerCase() === "skill");
+  for (let i = 1; i < lines.length; i++) {
+    const row = parseCSVLine(lines[i]);
+    if (conceptIdx >= 0 && row[conceptIdx]) concepts.add(row[conceptIdx].trim());
+    if (skillIdx >= 0 && row[skillIdx]) skills.add(row[skillIdx].trim());
+  }
+  return { concepts, skills };
 }
 
 // ── IOSection ─────────────────────────────────────────────────────────────────
@@ -242,6 +258,223 @@ function CsvInlineEntry({ csvText }: { csvText: string }) {
   );
 }
 
+// ── GeneratorStatsEntry — unique concept + skill counts ───────────────────────
+
+function GeneratorStatsEntry({ csvText }: { csvText: string }) {
+  const { concepts, skills } = parseCsvSets(csvText);
+  return (
+    <div className="flex gap-4 mt-0.5">
+      <div className="flex flex-col">
+        <span className="text-[9px] uppercase tracking-wide text-muted-foreground">Concepts</span>
+        <span className="text-lg font-bold leading-tight" style={{ color: "var(--qm-blue)" }}>
+          {concepts.size}
+        </span>
+        <span className="text-[9px] text-muted-foreground">unique</span>
+      </div>
+      <div className="w-px bg-border self-stretch" />
+      <div className="flex flex-col">
+        <span className="text-[9px] uppercase tracking-wide text-muted-foreground">Skills</span>
+        <span className="text-lg font-bold leading-tight" style={{ color: "var(--qm-blue)" }}>
+          {skills.size}
+        </span>
+        <span className="text-[9px] text-muted-foreground">unique</span>
+      </div>
+    </div>
+  );
+}
+
+// ── CoverageDiff — side-by-side CSV vs CSM (Eval card) ───────────────────────
+
+interface CsmData {
+  concepts: string[];
+  skills: string[];
+}
+
+function CoverageDiff({
+  csvText,
+  csm,
+  missingConcepts,
+  missingSkills,
+}: {
+  csvText: string;
+  csm: CsmData;
+  missingConcepts: string[];
+  missingSkills: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  const { concepts: csvConcepts, skills: csvSkills } = parseCsvSets(csvText);
+
+  const missingConceptSet = new Set(missingConcepts.map((c) => c.toLowerCase()));
+  const missingSkillSet = new Set(missingSkills.map((s) => s.toLowerCase()));
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        onClick={() => setOpen((p) => !p)}
+        className="flex items-center gap-1 text-[10px] text-primary/70 hover:text-primary transition-colors w-fit"
+      >
+        {open ? (
+          <><ChevronUp className="h-3 w-3" /> Collapse coverage comparison</>
+        ) : (
+          <><ChevronDown className="h-3 w-3" /> View coverage comparison</>
+        )}
+      </button>
+
+      {open && (
+        <div className="mt-1 grid grid-cols-2 gap-3 rounded border border-border bg-secondary/30 p-3">
+          {/* Left: CSV output */}
+          <div className="flex flex-col gap-2 min-w-0">
+            <div className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground border-b border-border pb-1">
+              CSV Output
+            </div>
+
+            <div>
+              <div className="text-[9px] font-semibold text-muted-foreground mb-1">
+                Concepts ({csvConcepts.size})
+              </div>
+              <div className="thin-scroll max-h-36 overflow-y-auto space-y-0.5">
+                {[...csvConcepts].map((c) => (
+                  <div key={c} className="text-[10px] text-foreground/80 truncate" title={c}>
+                    {c}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[9px] font-semibold text-muted-foreground mb-1">
+                Skills ({csvSkills.size})
+              </div>
+              <div className="thin-scroll max-h-36 overflow-y-auto space-y-0.5">
+                {[...csvSkills].map((s) => (
+                  <div key={s} className="text-[10px] text-foreground/80 truncate" title={s}>
+                    {s}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Right: Concept-Skill Map with coverage highlights */}
+          <div className="flex flex-col gap-2 min-w-0">
+            <div className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground border-b border-border pb-1">
+              Concept-Skill Map
+            </div>
+
+            <div>
+              <div className="text-[9px] font-semibold text-muted-foreground mb-1">
+                Concepts ({csm.concepts.length})
+              </div>
+              <div className="thin-scroll max-h-36 overflow-y-auto space-y-0.5">
+                {csm.concepts.map((c) => {
+                  const missing = missingConceptSet.has(c.toLowerCase());
+                  return (
+                    <div
+                      key={c}
+                      title={missing ? `Not covered: ${c}` : c}
+                      className={cn(
+                        "text-[10px] truncate",
+                        missing
+                          ? "text-[var(--qm-red)] font-semibold"
+                          : "text-[var(--qm-green)]"
+                      )}
+                    >
+                      {missing ? "✗ " : "✓ "}{c}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[9px] font-semibold text-muted-foreground mb-1">
+                Skills ({csm.skills.length})
+              </div>
+              <div className="thin-scroll max-h-36 overflow-y-auto space-y-0.5">
+                {csm.skills.map((s) => {
+                  const missing = missingSkillSet.has(s.toLowerCase());
+                  return (
+                    <div
+                      key={s}
+                      title={missing ? `Not covered: ${s}` : s}
+                      className={cn(
+                        "text-[10px] truncate",
+                        missing
+                          ? "text-[var(--qm-red)] font-semibold"
+                          : "text-[var(--qm-green)]"
+                      )}
+                    >
+                      {missing ? "✗ " : "✓ "}{s}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── MapListSection — expandable list of concepts or skills ────────────────────
+
+function MapListSection({
+  label,
+  items,
+  color,
+}: {
+  label: string;
+  items: string[];
+  color: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const PREVIEW = 4;
+
+  return (
+    <div className="flex flex-col gap-1">
+      {/* Header row: label + count badge */}
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+          {label}
+        </span>
+        <span
+          className="rounded px-1.5 py-0.5 text-[9px] font-bold"
+          style={{ background: `${color}22`, color }}
+        >
+          {items.length}
+        </span>
+      </div>
+
+      {/* Preview rows (always visible) */}
+      <div className="space-y-0.5">
+        {(open ? items : items.slice(0, PREVIEW)).map((item, i) => (
+          <div
+            key={i}
+            className="flex items-start gap-1.5 text-[10px] leading-relaxed"
+          >
+            <span style={{ color }} className="mt-px shrink-0 text-[9px]">▸</span>
+            <span className="text-foreground/80">{item}</span>
+          </div>
+        ))}
+      </div>
+
+      {items.length > PREVIEW && (
+        <button
+          onClick={() => setOpen((p) => !p)}
+          className="flex items-center gap-0.5 text-[10px] text-primary/70 hover:text-primary transition-colors w-fit"
+        >
+          {open ? (
+            <><ChevronUp className="h-3 w-3" /> Show less</>
+          ) : (
+            <><ChevronDown className="h-3 w-3" /> +{items.length - PREVIEW} more</>
+          )}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── MapExtractionCard ─────────────────────────────────────────────────────────
 
 function MapExtractionCard({ agent }: { agent: AgentRecord }) {
@@ -250,8 +483,10 @@ function MapExtractionCard({ agent }: { agent: AgentRecord }) {
   const inp = agent.input as Record<string, unknown>;
   const out = agent.output as Record<string, unknown> | null;
 
-  const guidance =
-    typeof inp.guidance === "string" ? inp.guidance : null;
+  const guidance = typeof inp.guidance === "string" ? inp.guidance : null;
+
+  const concepts = Array.isArray(out?.concepts) ? (out!.concepts as string[]) : null;
+  const skills   = Array.isArray(out?.skills)   ? (out!.skills   as string[]) : null;
 
   return (
     <Card className="border-border bg-card py-0">
@@ -295,27 +530,20 @@ function MapExtractionCard({ agent }: { agent: AgentRecord }) {
 
         {/* Output column */}
         {out ? (
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-3">
             <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
               OUTPUT
             </div>
-            {out.concepts != null && (
-              <div className="text-[11px] leading-relaxed">
-                <span className="text-muted-foreground">concepts:</span>{" "}
-                <span className="text-[var(--qm-green)] font-semibold">
-                  {String(out.concepts)} extracted
-                </span>
-              </div>
-            )}
-            {out.skills != null && (
-              <div className="text-[11px] leading-relaxed">
-                <span className="text-muted-foreground">skills:</span>{" "}
-                <span className="text-[var(--qm-green)] font-semibold">
-                  {String(out.skills)} extracted
-                </span>
-              </div>
-            )}
-            <div className="mt-1 text-[10px] text-muted-foreground italic">
+
+            {concepts ? (
+              <MapListSection label="Concepts" items={concepts} color={color} />
+            ) : null}
+
+            {skills ? (
+              <MapListSection label="Skills" items={skills} color={color} />
+            ) : null}
+
+            <div className="text-[10px] text-muted-foreground italic">
               Saved to knowledge base
             </div>
           </div>
@@ -323,6 +551,136 @@ function MapExtractionCard({ agent }: { agent: AgentRecord }) {
           <div />
         )}
       </CardContent>
+    </Card>
+  );
+}
+
+// ── EvalCard ──────────────────────────────────────────────────────────────────
+
+function EvalCard({ agent }: { agent: AgentRecord }) {
+  const color = AGENT_COLORS["Eval"];
+  const icon = AGENT_ICONS["Eval"];
+  const inp = agent.input as Record<string, unknown>;
+  const out = agent.output as Record<string, unknown> | null;
+
+  const csvText = typeof inp.csv_preview === "string" ? inp.csv_preview : null;
+  const csm = inp.concept_skill_map as CsmData | null;
+
+  type CheckResult = { passed?: boolean; feedback?: string[]; missing_concepts?: string[]; missing_skills?: string[] };
+  const check1 = out?.check1 as CheckResult | null;
+  const check2 = out?.check2 as CheckResult | null;
+
+  const hasDiff = csvText && csm && csm.concepts?.length > 0;
+
+  return (
+    <Card className="border-border bg-card py-0">
+      <CardHeader className="flex flex-row items-center gap-3 border-b border-border px-4 py-2.5">
+        <div
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-sm"
+          style={{ background: `${color}22`, color }}
+        >
+          {icon}
+        </div>
+        <div className="flex-1 text-xs font-bold" style={{ color }}>
+          {agent.name}
+        </div>
+        {agent.status === "running" ? (
+          <span className="text-[10px] font-bold text-[var(--qm-amber)]">
+            <span className="inline-block animate-spin">⟳</span> RUNNING
+          </span>
+        ) : (
+          <span className="text-[10px] font-bold text-[var(--qm-green)]">✓ DONE</span>
+        )}
+      </CardHeader>
+
+      <CardContent className="grid grid-cols-2 gap-4 px-4 py-3">
+        {/* Input column */}
+        <div className="flex flex-col gap-1">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+            INPUT
+          </div>
+          {inp.rows != null && (
+            <div className="text-[11px] leading-relaxed">
+              <span className="text-muted-foreground">rows:</span>{" "}
+              <span>{String(inp.rows)}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Output column */}
+        {out ? (
+          <div className="flex flex-col gap-2">
+            <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              OUTPUT
+            </div>
+
+            {check1 && (
+              <div className="flex flex-col gap-0.5">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={cn(
+                      "text-[10px] font-bold",
+                      check1.passed ? "text-[var(--qm-green)]" : "text-[var(--qm-red)]"
+                    )}
+                  >
+                    {check1.passed ? "✓" : "✗"} Check 1
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">rules compliance</span>
+                </div>
+                {!check1.passed &&
+                  check1.feedback?.slice(0, 2).map((f, i) => (
+                    <div key={i} className="text-[10px] text-[var(--qm-red)]/80 leading-relaxed pl-3">
+                      • {f}
+                    </div>
+                  ))}
+              </div>
+            )}
+
+            {check2 && (
+              <div className="flex flex-col gap-0.5">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={cn(
+                      "text-[10px] font-bold",
+                      check2.passed ? "text-[var(--qm-green)]" : "text-[var(--qm-red)]"
+                    )}
+                  >
+                    {check2.passed ? "✓" : "✗"} Check 2
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">CSM coverage</span>
+                </div>
+                {(check2.missing_concepts?.length ?? 0) > 0 && (
+                  <div className="text-[10px] text-[var(--qm-red)]/80 leading-relaxed pl-3">
+                    • {check2.missing_concepts!.length} missing concept{check2.missing_concepts!.length !== 1 ? "s" : ""}
+                  </div>
+                )}
+                {(check2.missing_skills?.length ?? 0) > 0 && (
+                  <div className="text-[10px] text-[var(--qm-red)]/80 leading-relaxed pl-3">
+                    • {check2.missing_skills!.length} missing skill{check2.missing_skills!.length !== 1 ? "s" : ""}
+                  </div>
+                )}
+                {check2.passed && (
+                  <div className="text-[10px] text-[var(--qm-green)] pl-3">All concepts and skills covered</div>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div />
+        )}
+      </CardContent>
+
+      {/* Full-width coverage comparison panel */}
+      {hasDiff && (
+        <div className="border-t border-border px-4 pb-3 pt-2.5">
+          <CoverageDiff
+            csvText={csvText}
+            csm={csm}
+            missingConcepts={check2?.missing_concepts ?? []}
+            missingSkills={check2?.missing_skills ?? []}
+          />
+        </div>
+      )}
     </Card>
   );
 }
@@ -395,6 +753,9 @@ function AgentCard({ agent }: { agent: AgentRecord }) {
         {agent.output ? (
           <div className="flex flex-col gap-2">
             <IOSection data={agent.output} label="OUTPUT" />
+            {agent.name === "Generator" && csvPreview && (
+              <GeneratorStatsEntry csvText={csvPreview} />
+            )}
             {csvPreview && <CsvInlineEntry csvText={csvPreview} />}
             {revisedPrompt && (
               <TextExpandEntry label="revised_prompt" text={revisedPrompt} accentColor="var(--qm-purple)" />
@@ -482,6 +843,8 @@ function AttemptGroup({
             {agents.map((agent, i) =>
               MAP_EXTRACTION_NAMES.has(agent.name) ? (
                 <MapExtractionCard key={`${agent.name}-${agent.attempt}-${i}`} agent={agent} />
+              ) : agent.name === "Eval" ? (
+                <EvalCard key={`${agent.name}-${agent.attempt}-${i}`} agent={agent} />
               ) : (
                 <AgentCard key={`${agent.name}-${agent.attempt}-${i}`} agent={agent} />
               )
@@ -518,11 +881,16 @@ export function AgentTimeline({ agents, currentAttempt }: AgentTimelineProps) {
 
   const grouped = new Map<number, AgentRecord[]>();
   for (const agent of agents) {
-    const key = agent.attempt || 1;
+    // Use ?? (not ||) so attempt:0 (pre-run) is kept as 0, not collapsed into 1
+    const key = agent.attempt ?? 1;
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key)!.push(agent);
   }
-  const attempts = [...grouped.entries()].sort(([a], [b]) => a - b);
+
+  const preRunAgents = grouped.get(0) ?? [];
+  const cycleEntries = [...grouped.entries()]
+    .filter(([k]) => k > 0)
+    .sort(([a], [b]) => a - b);
 
   const toggle = (attempt: number) => {
     setOpenAttempts((prev) => {
@@ -539,7 +907,28 @@ export function AgentTimeline({ agents, currentAttempt }: AgentTimelineProps) {
         Agent Timeline
       </div>
       <div className="space-y-2">
-        {attempts.map(([attempt, agentList]) => (
+        {/* Pre-run section: Map Extraction runs once before any cycle */}
+        {preRunAgents.length > 0 && (
+          <div className="rounded-md border border-border overflow-hidden">
+            <div className="flex items-center gap-3 bg-secondary/40 px-4 py-2.5">
+              <span className="text-xs font-bold text-foreground">Pre-run</span>
+              <span className="text-[10px] text-muted-foreground">
+                {preRunAgents.length} agent{preRunAgents.length !== 1 ? "s" : ""}
+              </span>
+              <span className="text-[10px] text-muted-foreground italic">runs once, outside cycle</span>
+            </div>
+            <div className="relative border-t border-border pl-4">
+              <div className="absolute left-[1.4rem] top-0 bottom-0 w-px bg-border" />
+              <div className="space-y-3 py-3 pr-3">
+                {preRunAgents.map((agent, i) => (
+                  <MapExtractionCard key={`prerun-${agent.name}-${i}`} agent={agent} />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {cycleEntries.map(([attempt, agentList]) => (
           <AttemptGroup
             key={attempt}
             attempt={attempt}

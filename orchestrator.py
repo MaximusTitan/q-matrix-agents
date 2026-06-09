@@ -27,6 +27,7 @@ from agents.revision       import run as run_revision
 
 from skills.kb_access import (
     concept_skill_map_exists,
+    load_concept_skill_map,
     load_prompt,
     save_prompt,
     append_grade_rule,
@@ -117,16 +118,17 @@ def run_pipeline(
     while attempt < MAX_ATTEMPTS:
         attempt += 1
         print(f"\n── Attempt {attempt}/{MAX_ATTEMPTS} ──────────────────────────────────────")
-        emit("attempt_started", {"attempt": attempt, "max_attempts": MAX_ATTEMPTS})
 
         prompt_snapshot, _ = load_prompt(board, subject, grade)
 
-        # ── Generate ──────────────────────────────────────────────────────────
+        # ── Map Extraction (pre-cycle, runs once before attempt 1 if no map exists) ──
+        gen_result = None
         if not map_exists and attempt == 1:
             print("[orchestrator] No map — running Map Extraction + Generator in parallel")
+            # Emit before attempt_started so the card sits outside the cycle groups
             emit("agent_started", {
-                "agent": "Map Extraction + Generator",
-                "parallel": True,
+                "agent": "Map Extraction",
+                "parallel": False,
                 "attempt": attempt,
                 "input": {"board": board, "subject": subject, "grade": grade, "chapter": chapter},
             })
@@ -141,20 +143,26 @@ def run_pipeline(
             emit("agent_completed", {
                 "agent": "Map Extraction",
                 "output": {
-                    "concepts": len(map_result["concepts"]),
-                    "skills":   len(map_result["skills"]),
+                    "concepts": map_result["concepts"],
+                    "skills":   map_result["skills"],
                 },
             })
-        else:
-            emit("agent_started", {
-                "agent": "Generator",
-                "parallel": False,
-                "attempt": attempt,
-                "input": {
-                    "board": board, "subject": subject, "grade": grade, "chapter": chapter,
-                    "base_prompt": prompt_snapshot,
-                },
-            })
+
+        # ── Attempt starts after any pre-cycle work ────────────────────────────
+        emit("attempt_started", {"attempt": attempt, "max_attempts": MAX_ATTEMPTS})
+
+        # ── Generate ──────────────────────────────────────────────────────────
+        emit("agent_started", {
+            "agent": "Generator",
+            "parallel": False,
+            "attempt": attempt,
+            "input": {
+                "board": board, "subject": subject, "grade": grade, "chapter": chapter,
+                "base_prompt": prompt_snapshot,
+            },
+        })
+
+        if gen_result is None:
             gen_result = run_generator(board, subject, grade, chapter)
 
         current_csv        = gen_result["csv"]
@@ -171,10 +179,19 @@ def run_pipeline(
         print(f"[orchestrator] Generated {len(gen_result['rows'])} rows via {current_input_type}")
 
         # ── Evaluate ──────────────────────────────────────────────────────────
+        try:
+            csm_data = load_concept_skill_map(board, subject, grade, chapter)
+        except Exception:
+            csm_data = None
+
         emit("agent_started", {
             "agent": "Eval",
             "attempt": attempt,
-            "input": {"rows": len(gen_result["rows"])},
+            "input": {
+                "rows": len(gen_result["rows"]),
+                "csv_preview": current_csv,
+                "concept_skill_map": csm_data,
+            },
         })
 
         eval_result = run_eval(current_csv, board, subject, grade, chapter)
@@ -336,8 +353,8 @@ def handle_re_extract(board, subject, grade, chapter, map_guidance, emit=None):
     emit("agent_completed", {
         "agent": "Map Extraction",
         "output": {
-            "concepts": len(result["concepts"]),
-            "skills":   len(result["skills"]),
+            "concepts": result["concepts"],
+            "skills":   result["skills"],
         },
     })
     print(f"[orchestrator] New map: {len(result['concepts'])} concepts, {len(result['skills'])} skills")

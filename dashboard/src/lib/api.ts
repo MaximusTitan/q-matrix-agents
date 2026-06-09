@@ -43,3 +43,34 @@ export async function fetchRuns(): Promise<RunMetadata[]> {
   }
   return res.json() as Promise<RunMetadata[]>;
 }
+
+export async function fetchKbBoards(): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/kb/boards`);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { boards: string[] };
+  return data.boards;
+}
+
+export async function fetchKbSubjects(board: string): Promise<string[]> {
+  const params = new URLSearchParams({ board });
+  const res = await fetch(`${API_BASE}/kb/subjects?${params}`);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { subjects: string[] };
+  return data.subjects;
+}
+
+export async function fetchKbGrades(board: string, subject: string): Promise<string[]> {
+  const params = new URLSearchParams({ board, subject });
+  const res = await fetch(`${API_BASE}/kb/grades?${params}`);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { grades: string[] };
+  return data.grades;
+}
+
+export async function fetchKbChapters(board: string, subject: string, grade: string): Promise<string[]> {
+  const params = new URLSearchParams({ board, subject, grade });
+  const res = await fetch(`${API_BASE}/kb/chapters?${params}`);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { chapters: string[] };
+  return data.chapters;
+}

@@ -15,6 +15,7 @@ Then open: http://localhost:3000
 
 import asyncio
 import json
+import os
 import queue
 import threading
 from pathlib import Path
@@ -182,6 +183,50 @@ async def stream(run_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+def _kb_textbooks_root() -> Path | None:
+    kb_root = os.environ.get("KB_ROOT", "")
+    if not kb_root:
+        return None
+    p = Path(kb_root) / "textbooks"
+    return p if p.exists() else None
+
+
+def _list_dirs(path: Path) -> list[str]:
+    """Return sorted child directory names, or [] if path doesn't exist."""
+    try:
+        return sorted(d.name for d in path.iterdir() if d.is_dir())
+    except (FileNotFoundError, PermissionError):
+        return []
+
+
+@app.get("/kb/boards")
+async def kb_boards():
+    """List board folders directly under KB_ROOT/textbooks/."""
+    base = _kb_textbooks_root()
+    return {"boards": _list_dirs(base) if base else []}
+
+
+@app.get("/kb/subjects")
+async def kb_subjects(board: str):
+    """List subject folders under KB_ROOT/textbooks/{board}/."""
+    base = _kb_textbooks_root()
+    return {"subjects": _list_dirs(base / board) if base else []}
+
+
+@app.get("/kb/grades")
+async def kb_grades(board: str, subject: str):
+    """List grade folders under KB_ROOT/textbooks/{board}/{subject}/."""
+    base = _kb_textbooks_root()
+    return {"grades": _list_dirs(base / board / subject) if base else []}
+
+
+@app.get("/kb/chapters")
+async def kb_chapters(board: str, subject: str, grade: str):
+    """List chapter folders under KB_ROOT/textbooks/{board}/{subject}/{grade}/."""
+    base = _kb_textbooks_root()
+    return {"chapters": _list_dirs(base / board / subject / grade) if base else []}
 
 
 @app.get("/runs")
