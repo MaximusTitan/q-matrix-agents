@@ -16,6 +16,27 @@ export interface CheckResult {
   feedback?: string[];
   missing_concepts?: string[];
   missing_skills?: string[];
+  // Values are lists of the actual CSV item(s) that cover each expected item
+  // (1:N union coverage). Older runs may have bare-string values.
+  matched_concepts?: Record<string, string[] | string>;
+  matched_skills?: Record<string, string[] | string>;
+  // Actual CSV items not covering any expected item (computed in the backend).
+  extra_concepts?: string[];
+  extra_skills?: string[];
+  // Pass-2 reconciliation audit trail: for each expected item that was first
+  // marked missing but had a lexically-similar extra, the candidates + verdict.
+  reconciliation?: Reconciliation;
+}
+
+export interface ReconciliationEntry {
+  outcome: "recovered" | "rejected";
+  candidates: { actual: string; score: number }[];
+  covered_by: string[];
+}
+
+export interface Reconciliation {
+  concepts: Record<string, ReconciliationEntry>;
+  skills: Record<string, ReconciliationEntry>;
 }
 
 export interface AttemptRecord {

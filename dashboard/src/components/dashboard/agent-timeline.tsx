@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import type { AgentRecord } from "@/lib/types";
+import type { AgentRecord, Reconciliation, ReconciliationEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const AGENT_ICONS: Record<string, string> = {
@@ -54,7 +54,10 @@ function needsExpand(data: Record<string, unknown>): boolean {
   });
 }
 
-function parseCSVLine(line: string): string[] {
+// maxCols caps the number of columns: once the first (maxCols-1) are filled, any
+// further unquoted commas stay in the last field. This recovers malformed rows
+// where the trailing column (e.g. a skill) contains unquoted commas.
+function parseCSVLine(line: string, maxCols?: number): string[] {
   const result: string[] = [];
   let current = "";
   let inQuotes = false;
@@ -63,7 +66,7 @@ function parseCSVLine(line: string): string[] {
     if (ch === '"') {
       if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
       else inQuotes = !inQuotes;
-    } else if (ch === "," && !inQuotes) {
+    } else if (ch === "," && !inQuotes && (maxCols === undefined || result.length < maxCols - 1)) {
       result.push(current.trim());
       current = "";
     } else {
@@ -83,7 +86,7 @@ function parseCsvSets(csvText: string): { concepts: Set<string>; skills: Set<str
   const conceptIdx = headers.findIndex((h) => h.toLowerCase() === "concept");
   const skillIdx = headers.findIndex((h) => h.toLowerCase() === "skill");
   for (let i = 1; i < lines.length; i++) {
-    const row = parseCSVLine(lines[i]);
+    const row = parseCSVLine(lines[i], headers.length);
     if (conceptIdx >= 0 && row[conceptIdx]) concepts.add(row[conceptIdx].trim());
     if (skillIdx >= 0 && row[skillIdx]) skills.add(row[skillIdx].trim());
   }
@@ -195,12 +198,29 @@ function TextExpandEntry({
 
 // ── CSV inline preview (Generator card) ───────────────────────────────────────
 
+// A CSV table cell that truncates by default and expands to full wrapped text on click.
+function CsvCell({ cell }: { cell: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <td
+      onClick={() => setExpanded((p) => !p)}
+      className={cn(
+        "px-2 py-1 text-[10px] text-foreground/80 cursor-pointer align-top",
+        expanded ? "whitespace-normal break-words" : "whitespace-nowrap max-w-[160px] truncate"
+      )}
+      title={expanded ? undefined : cell}
+    >
+      {cell}
+    </td>
+  );
+}
+
 function CsvInlineEntry({ csvText }: { csvText: string }) {
   const [open, setOpen] = useState(false);
 
   const lines = csvText.split("\n").filter((l) => l.trim());
   const headers = lines.length > 0 ? parseCSVLine(lines[0]) : [];
-  const dataRows = lines.slice(1).map(parseCSVLine);
+  const dataRows = lines.slice(1).map((l) => parseCSVLine(l, headers.length));
   const rowCount = dataRows.length;
 
   return (
@@ -240,13 +260,7 @@ function CsvInlineEntry({ csvText }: { csvText: string }) {
               {dataRows.map((row, ri) => (
                 <tr key={ri} className={ri % 2 === 0 ? "bg-card" : "bg-secondary/30"}>
                   {row.map((cell, ci) => (
-                    <td
-                      key={ci}
-                      className="px-2 py-1 text-[10px] text-foreground/80 whitespace-nowrap max-w-[160px] truncate"
-                      title={cell}
-                    >
-                      {cell}
-                    </td>
+                    <CsvCell key={ci} cell={cell} />
                   ))}
                 </tr>
               ))}
@@ -283,11 +297,231 @@ function GeneratorStatsEntry({ csvText }: { csvText: string }) {
   );
 }
 
-// ── CoverageDiff — side-by-side CSV vs CSM (Eval card) ───────────────────────
+// ── CoverageDiff — matched-pairs coverage table (Eval card) ──────────────────
 
 interface CsmData {
   concepts: string[];
   skills: string[];
+}
+
+
+// A single expandable coverage row. Collapsed: truncated single line.
+// Expanded (click anywhere): full wrapped text, with multiple CSV items as bullets.
+function CoverageRow({
+  csmText,
+  csvItems,
+  status,
+  recon,
+}: {
+  csmText: string;
+  csvItems: string[];
+  status: "missing" | "covered" | "extra";
+  recon?: ReconciliationEntry;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const tone =
+    status === "missing"
+      ? "bg-[var(--qm-red)]/5"
+      : status === "covered"
+      ? "bg-[var(--qm-green)]/5"
+      : "bg-muted/30";
+  const statusTone =
+    status === "missing"
+      ? "text-[var(--qm-red)]"
+      : status === "covered"
+      ? "text-[var(--qm-green)]"
+      : "text-muted-foreground/60";
+  const statusLabel =
+    status === "missing" ? "✗ missing" : status === "covered" ? "✓ covered" : "extra";
+
+  const hasCsv = csvItems.length > 0;
+  const csvJoined = csvItems.join("; ");
+
+  // Reconciliation marker (pass-2 similarity audit). "recovered" = was missing,
+  // now covered via similarity; "rejected" = had a similar extra but LLM disagreed.
+  const reconBadge = recon
+    ? recon.outcome === "recovered"
+      ? { text: "↺ reconciled", cls: "text-[var(--qm-amber)]" }
+      : { text: "↺ checked", cls: "text-muted-foreground/60" }
+    : null;
+
+  return (
+    <div
+      onClick={() => setExpanded((p) => !p)}
+      className={cn(
+        "flex flex-col rounded px-1 py-0.5 cursor-pointer hover:brightness-110",
+        tone
+      )}
+      title={expanded ? undefined : "Click to expand"}
+    >
+      <div
+        className={cn(
+          "grid grid-cols-[1fr_1fr_auto] gap-x-2",
+          expanded ? "items-start" : "items-center"
+        )}
+      >
+        {/* CSM (expected) */}
+        <div
+          className={cn(
+            "text-[10px] text-foreground/80 flex items-center gap-1",
+            status === "extra" && "text-muted-foreground/40 italic",
+            expanded ? "whitespace-normal break-words" : "truncate"
+          )}
+        >
+          {reconBadge && (
+            <span className={cn("shrink-0 text-[9px] font-semibold", reconBadge.cls)}>↺</span>
+          )}
+          <span className={expanded ? "whitespace-normal break-words" : "truncate"}>{csmText}</span>
+        </div>
+
+        {/* CSV (actual) */}
+        <div
+          className={cn(
+            "text-[10px]",
+            status === "missing" ? "text-muted-foreground/40 italic" : "text-foreground/80",
+            status === "extra" && "text-foreground/60",
+            expanded ? "whitespace-normal break-words" : "truncate"
+          )}
+        >
+          {!hasCsv ? (
+            "—"
+          ) : expanded && csvItems.length > 1 ? (
+            <ul className="list-disc pl-3 space-y-0.5">
+              {csvItems.map((c, i) => (
+                <li key={i}>{c}</li>
+              ))}
+            </ul>
+          ) : (
+            csvJoined
+          )}
+        </div>
+
+        {/* Status */}
+        <div className={cn("text-[10px] font-semibold shrink-0 w-14 text-right", statusTone)}>
+          {statusLabel}
+        </div>
+      </div>
+
+      {/* Reconciliation detail — shown when the row is expanded */}
+      {expanded && recon && (
+        <div className="mt-1 ml-1 border-l-2 border-[var(--qm-amber)]/40 pl-2 flex flex-col gap-0.5">
+          <div className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+            {recon.outcome === "recovered"
+              ? "Recovered via similarity — covered by:"
+              : "Similar extras checked, not confirmed covered:"}
+          </div>
+          {recon.candidates.map((c, i) => {
+            const confirmed = recon.covered_by.some(
+              (cb) => cb.toLowerCase() === c.actual.toLowerCase()
+            );
+            return (
+              <div key={i} className="grid grid-cols-[auto_1fr] gap-x-2 items-baseline text-[10px]">
+                <span
+                  className={cn(
+                    "font-mono tabular-nums",
+                    confirmed ? "text-[var(--qm-green)]" : "text-muted-foreground/50"
+                  )}
+                >
+                  {c.score.toFixed(2)}
+                </span>
+                <span
+                  className={cn(
+                    "break-words",
+                    confirmed ? "text-foreground/80" : "text-muted-foreground/60 line-through decoration-muted-foreground/30"
+                  )}
+                >
+                  {c.actual}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CoveragePairsTable({
+  label,
+  csmItems,
+  missingSet,
+  matched,
+  csvExtras,
+  recon,
+}: {
+  label: string;
+  csmItems: string[];
+  missingSet: Set<string>;
+  matched: Record<string, string[] | string>;
+  csvExtras: string[];
+  recon: Record<string, ReconciliationEntry>;
+}) {
+  // Build a lookup: csm item (lowercased) → list of matched csv item(s).
+  // Values are lists (1:N coverage); tolerate a legacy bare string.
+  const matchedLower: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(matched)) {
+    const items = Array.isArray(v) ? v : [v];
+    matchedLower[k.toLowerCase()] = items.filter(Boolean);
+  }
+
+  // Reconciliation entries keyed by lowercased expected item.
+  const reconLower: Record<string, ReconciliationEntry> = {};
+  for (const [k, v] of Object.entries(recon)) {
+    reconLower[k.toLowerCase()] = v;
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground border-b border-border pb-1">
+        {label}
+      </div>
+
+      {/* Header row */}
+      <div className="grid grid-cols-[1fr_1fr_auto] gap-x-2 items-center px-1">
+        <div className="text-[8px] font-semibold uppercase tracking-widest text-muted-foreground/70">
+          CSM (expected)
+        </div>
+        <div className="text-[8px] font-semibold uppercase tracking-widest text-muted-foreground/70">
+          CSV (actual)
+        </div>
+        <div className="w-14 text-[8px] font-semibold uppercase tracking-widest text-muted-foreground/70 text-right">
+          Status
+        </div>
+      </div>
+
+      {/* One row per CSM item */}
+      <div className="thin-scroll max-h-48 overflow-y-auto space-y-px">
+        {csmItems.map((item) => {
+          const missing = missingSet.has(item.toLowerCase());
+          const csvItems = missing ? [] : (matchedLower[item.toLowerCase()] ?? []);
+          return (
+            <CoverageRow
+              key={item}
+              csmText={item}
+              csvItems={csvItems}
+              status={missing ? "missing" : "covered"}
+              recon={reconLower[item.toLowerCase()]}
+            />
+          );
+        })}
+      </div>
+
+      {/* Extra CSV items not matched to anything in CSM */}
+      {csvExtras.length > 0 && (
+        <div className="mt-1 flex flex-col gap-0.5">
+          <div className="text-[8px] font-semibold uppercase tracking-widest text-muted-foreground/60 pt-1 border-t border-border">
+            Extra in CSV ({csvExtras.length})
+          </div>
+          <div className="thin-scroll max-h-24 overflow-y-auto space-y-px">
+            {csvExtras.map((item) => (
+              <CoverageRow key={item} csmText="—" csvItems={[item]} status="extra" />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function CoverageDiff({
@@ -295,17 +529,43 @@ function CoverageDiff({
   csm,
   missingConcepts,
   missingSkills,
+  matchedConcepts,
+  matchedSkills,
+  extraConcepts: extraConceptsProp,
+  extraSkills: extraSkillsProp,
+  reconciliation,
 }: {
   csvText: string;
   csm: CsmData;
   missingConcepts: string[];
   missingSkills: string[];
+  matchedConcepts: Record<string, string[] | string>;
+  matchedSkills: Record<string, string[] | string>;
+  extraConcepts?: string[];
+  extraSkills?: string[];
+  reconciliation?: Reconciliation;
 }) {
   const [open, setOpen] = useState(false);
   const { concepts: csvConcepts, skills: csvSkills } = parseCsvSets(csvText);
 
   const missingConceptSet = new Set(missingConcepts.map((c) => c.toLowerCase()));
   const missingSkillSet = new Set(missingSkills.map((s) => s.toLowerCase()));
+
+  // Prefer the backend-computed extras (they account for 1:N coverage); fall back
+  // to deriving from flattened matched values for older runs without the field.
+  const flattenValues = (m: Record<string, string[] | string>) =>
+    new Set(
+      Object.values(m)
+        .flatMap((v) => (Array.isArray(v) ? v : [v]))
+        .filter(Boolean)
+        .map((v) => v.toLowerCase())
+    );
+  const extraConcepts =
+    extraConceptsProp ??
+    [...csvConcepts].filter((c) => !flattenValues(matchedConcepts).has(c.toLowerCase()));
+  const extraSkills =
+    extraSkillsProp ??
+    [...csvSkills].filter((s) => !flattenValues(matchedSkills).has(s.toLowerCase()));
 
   return (
     <div className="flex flex-col gap-1">
@@ -321,96 +581,23 @@ function CoverageDiff({
       </button>
 
       {open && (
-        <div className="mt-1 grid grid-cols-2 gap-3 rounded border border-border bg-secondary/30 p-3">
-          {/* Left: CSV output */}
-          <div className="flex flex-col gap-2 min-w-0">
-            <div className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground border-b border-border pb-1">
-              CSV Output
-            </div>
-
-            <div>
-              <div className="text-[9px] font-semibold text-muted-foreground mb-1">
-                Concepts ({csvConcepts.size})
-              </div>
-              <div className="thin-scroll max-h-36 overflow-y-auto space-y-0.5">
-                {[...csvConcepts].map((c) => (
-                  <div key={c} className="text-[10px] text-foreground/80 truncate" title={c}>
-                    {c}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <div className="text-[9px] font-semibold text-muted-foreground mb-1">
-                Skills ({csvSkills.size})
-              </div>
-              <div className="thin-scroll max-h-36 overflow-y-auto space-y-0.5">
-                {[...csvSkills].map((s) => (
-                  <div key={s} className="text-[10px] text-foreground/80 truncate" title={s}>
-                    {s}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Right: Concept-Skill Map with coverage highlights */}
-          <div className="flex flex-col gap-2 min-w-0">
-            <div className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground border-b border-border pb-1">
-              Concept-Skill Map
-            </div>
-
-            <div>
-              <div className="text-[9px] font-semibold text-muted-foreground mb-1">
-                Concepts ({csm.concepts.length})
-              </div>
-              <div className="thin-scroll max-h-36 overflow-y-auto space-y-0.5">
-                {csm.concepts.map((c) => {
-                  const missing = missingConceptSet.has(c.toLowerCase());
-                  return (
-                    <div
-                      key={c}
-                      title={missing ? `Not covered: ${c}` : c}
-                      className={cn(
-                        "text-[10px] truncate",
-                        missing
-                          ? "text-[var(--qm-red)] font-semibold"
-                          : "text-[var(--qm-green)]"
-                      )}
-                    >
-                      {missing ? "✗ " : "✓ "}{c}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div>
-              <div className="text-[9px] font-semibold text-muted-foreground mb-1">
-                Skills ({csm.skills.length})
-              </div>
-              <div className="thin-scroll max-h-36 overflow-y-auto space-y-0.5">
-                {csm.skills.map((s) => {
-                  const missing = missingSkillSet.has(s.toLowerCase());
-                  return (
-                    <div
-                      key={s}
-                      title={missing ? `Not covered: ${s}` : s}
-                      className={cn(
-                        "text-[10px] truncate",
-                        missing
-                          ? "text-[var(--qm-red)] font-semibold"
-                          : "text-[var(--qm-green)]"
-                      )}
-                    >
-                      {missing ? "✗ " : "✓ "}{s}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
+        <div className="mt-1 flex flex-col gap-4 rounded border border-border bg-secondary/30 p-3">
+          <CoveragePairsTable
+            label="Concepts"
+            csmItems={csm.concepts}
+            missingSet={missingConceptSet}
+            matched={matchedConcepts}
+            csvExtras={extraConcepts}
+            recon={reconciliation?.concepts ?? {}}
+          />
+          <CoveragePairsTable
+            label="Skills"
+            csmItems={csm.skills}
+            missingSet={missingSkillSet}
+            matched={matchedSkills}
+            csvExtras={extraSkills}
+            recon={reconciliation?.skills ?? {}}
+          />
         </div>
       )}
     </div>
@@ -566,7 +753,7 @@ function EvalCard({ agent }: { agent: AgentRecord }) {
   const csvText = typeof inp.csv_preview === "string" ? inp.csv_preview : null;
   const csm = inp.concept_skill_map as CsmData | null;
 
-  type CheckResult = { passed?: boolean; feedback?: string[]; missing_concepts?: string[]; missing_skills?: string[] };
+  type CheckResult = { passed?: boolean; feedback?: string[]; missing_concepts?: string[]; missing_skills?: string[]; matched_concepts?: Record<string, string[] | string>; matched_skills?: Record<string, string[] | string>; extra_concepts?: string[]; extra_skills?: string[]; reconciliation?: Reconciliation };
   const check1 = out?.check1 as CheckResult | null;
   const check2 = out?.check2 as CheckResult | null;
 
@@ -678,6 +865,11 @@ function EvalCard({ agent }: { agent: AgentRecord }) {
             csm={csm}
             missingConcepts={check2?.missing_concepts ?? []}
             missingSkills={check2?.missing_skills ?? []}
+            matchedConcepts={check2?.matched_concepts ?? {}}
+            matchedSkills={check2?.matched_skills ?? {}}
+            extraConcepts={check2?.extra_concepts}
+            extraSkills={check2?.extra_skills}
+            reconciliation={check2?.reconciliation}
           />
         </div>
       )}

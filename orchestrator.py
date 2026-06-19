@@ -61,8 +61,16 @@ def _collect_feedback(c1: dict, c2: dict) -> list[str]:
     feedback = []
     for f in c1.get("feedback", []):
         feedback.append(f"[Check 1] {f}")
-    for f in c2.get("feedback", []):
-        feedback.append(f"[Check 2] {f}")
+    missing_concepts = c2.get("missing_concepts", [])
+    missing_skills   = c2.get("missing_skills",   [])
+    if missing_concepts:
+        feedback.append(f"[Check 2] {len(missing_concepts)} concept(s) not covered in the CSV:")
+        for c in missing_concepts:
+            feedback.append(f"[Check 2]   - {c}")
+    if missing_skills:
+        feedback.append(f"[Check 2] {len(missing_skills)} skill(s) not covered in the CSV:")
+        for s in missing_skills:
+            feedback.append(f"[Check 2]   - {s}")
     return feedback
 
 
@@ -206,10 +214,15 @@ def run_pipeline(
                     "feedback": c1["feedback"],
                 },
                 "check2": {
-                    "passed":           c2["passed"],
-                    "feedback":         c2.get("feedback", []),
-                    "missing_concepts": c2.get("missing_concepts", []),
-                    "missing_skills":   c2.get("missing_skills", []),
+                    "passed":            c2["passed"],
+                    "feedback":          c2.get("feedback",          []),
+                    "missing_concepts":  c2.get("missing_concepts",  []),
+                    "missing_skills":    c2.get("missing_skills",    []),
+                    "matched_concepts":  c2.get("matched_concepts",  {}),
+                    "matched_skills":    c2.get("matched_skills",    {}),
+                    "extra_concepts":    c2.get("extra_concepts",    []),
+                    "extra_skills":      c2.get("extra_skills",      []),
+                    "reconciliation":    c2.get("reconciliation",    {"concepts": {}, "skills": {}}),
                 },
             },
         })

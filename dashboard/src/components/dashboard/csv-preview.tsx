@@ -11,7 +11,10 @@ interface CsvPreviewProps {
   chapter: string;
 }
 
-function parseCSVLine(line: string): string[] {
+// maxCols caps the number of columns: once the first (maxCols-1) are filled, any
+// further unquoted commas stay in the last field. This recovers malformed rows
+// where the trailing column (e.g. a skill) contains unquoted commas.
+function parseCSVLine(line: string, maxCols?: number): string[] {
   const result: string[] = [];
   let current = "";
   let inQuotes = false;
@@ -24,7 +27,7 @@ function parseCSVLine(line: string): string[] {
       } else {
         inQuotes = !inQuotes;
       }
-    } else if (ch === "," && !inQuotes) {
+    } else if (ch === "," && !inQuotes && (maxCols === undefined || result.length < maxCols - 1)) {
       result.push(current.trim());
       current = "";
     } else {
@@ -37,12 +40,29 @@ function parseCSVLine(line: string): string[] {
 
 const PREVIEW_ROWS = 10;
 
+// A CSV table cell that truncates by default and expands to full wrapped text on click.
+function CsvCell({ cell }: { cell: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <td
+      onClick={() => setExpanded((p) => !p)}
+      className={cn(
+        "px-3 py-1.5 text-[11px] text-foreground/80 cursor-pointer align-top",
+        expanded ? "whitespace-normal break-words" : "whitespace-nowrap max-w-[200px] truncate"
+      )}
+      title={expanded ? undefined : cell}
+    >
+      {cell}
+    </td>
+  );
+}
+
 export function CsvPreview({ csv, chapter }: CsvPreviewProps) {
   const [expanded, setExpanded] = useState(false);
 
   const lines = csv.split("\n").filter((l) => l.trim());
   const headers = lines.length > 0 ? parseCSVLine(lines[0]) : [];
-  const dataRows = lines.slice(1).map(parseCSVLine);
+  const dataRows = lines.slice(1).map((l) => parseCSVLine(l, headers.length));
   const visibleRows = expanded ? dataRows : dataRows.slice(0, PREVIEW_ROWS);
   const hasMore = dataRows.length > PREVIEW_ROWS;
 
@@ -93,13 +113,7 @@ export function CsvPreview({ csv, chapter }: CsvPreviewProps) {
                   className={ri % 2 === 0 ? "bg-card" : "bg-secondary/30"}
                 >
                   {row.map((cell, ci) => (
-                    <td
-                      key={ci}
-                      className="px-3 py-1.5 text-[11px] text-foreground/80 whitespace-nowrap max-w-[200px] truncate"
-                      title={cell}
-                    >
-                      {cell}
-                    </td>
+                    <CsvCell key={ci} cell={cell} />
                   ))}
                 </tr>
               ))}

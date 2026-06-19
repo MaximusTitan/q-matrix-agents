@@ -25,6 +25,7 @@ Rules:
 - One row per concept-skill pair
 - No empty cells
 - No additional columns
+- If any field's value contains a comma (e.g. a skill like "Classify triangles as scalene, isosceles, or equilateral"), wrap that entire field in double quotes: `"Classify triangles as scalene, isosceles, or equilateral"`. This keeps the columns aligned. Escape any literal double quote inside a field by doubling it (`""`).
 - No markdown, no explanation, no preamble — raw CSV only
 
 ---

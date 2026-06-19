@@ -19,7 +19,7 @@ Evaluate every row against every rule provided. Look for violations such as:
 - Duplicate or semantically identical skills under the same concept
 - Any other violation explicitly stated in the rules
 
-Output ONLY this JSON. No explanation, no markdown, no preamble:
+IMPORTANT: Your entire response must be a single JSON object. Do not write any analysis, explanation, or markdown before or after it. Start your response with `{` and end it with `}`. Nothing else.
 
 {
   "passed": true or false,
@@ -37,6 +37,11 @@ If the CSV passes all rules:
 ---
 
 ## Check 2 — Concept-Skill Map Coverage Evaluation
+
+> NOTE: Coverage is NOT driven by this prompt. It runs programmatically in
+> `skills/diff.py` (`diff_full`), which uses its own two-pass system prompt plus a
+> similarity-triggered reconciliation step. This section is retained only as
+> documentation of the check's intent; editing it does not change behavior.
 
 You will receive:
 - The generated CSV

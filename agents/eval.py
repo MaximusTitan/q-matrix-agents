@@ -36,7 +36,7 @@ with open(_PROMPT_PATH, "r", encoding="utf-8") as f:
     SYSTEM_PROMPT = f.read()
 
 
-def _parse_llm_json(raw: str, check_name: str) -> dict:
+def _parse_llm_json(raw: str, check_name: str) -> dict | None:
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
@@ -46,10 +46,8 @@ def _parse_llm_json(raw: str, check_name: str) -> dict:
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError as e:
-        raise ValueError(
-            f"[eval] {check_name} — LLM returned invalid JSON.\n"
-            f"Error: {e}\nRaw:\n{raw[:500]}"
-        )
+        print(f"[eval] {check_name} — LLM returned invalid JSON. Error: {e}\nRaw:\n{raw[:500]}")
+        return None
 
 
 def run_check1(csv: str, board: str, subject: str, grade: str) -> dict:
@@ -70,8 +68,20 @@ def run_check1(csv: str, board: str, subject: str, grade: str) -> dict:
 --- GENERATED CSV ---
 {csv}"""
 
-    raw    = call_llm(SYSTEM_PROMPT, user_content)
-    result = _parse_llm_json(raw, "Check 1")
+    for attempt in range(2):
+        raw    = call_llm(SYSTEM_PROMPT, user_content)
+        result = _parse_llm_json(raw, "Check 1")
+        if result is not None:
+            break
+        print(f"[eval] Check 1 — retrying LLM call ({attempt + 1}/2)")
+
+    if result is None:
+        print("[eval] Check 1 — both attempts returned non-JSON; marking as failed")
+        return {
+            "passed":   False,
+            "feedback": ["Check 1 evaluation failed — LLM returned non-JSON output. Re-run to retry."],
+        }
+
     passed   = result.get("passed", False)
     feedback = result.get("feedback", [])
 
