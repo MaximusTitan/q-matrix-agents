@@ -1,29 +1,21 @@
 """
 skills/llm.py
 
-Thin wrapper around Anthropic models served via Vercel's AI Gateway.
+Thin wrapper around the Anthropic API.
 All agents call LLMs through this single function.
 Model, token limits, and retry logic are configured here — not in agent code.
-
-The gateway exposes an OpenAI-compatible API, so we use the OpenAI SDK pointed
-at the gateway base URL and authenticate with the Vercel AI Gateway key
-(AI_GATEWAY_API_KEY) instead of a per-provider BYOK key.
 """
 
 import os
 import time
-import openai
+import anthropic
 from dotenv import load_dotenv
 
 load_dotenv()
 
-_client = openai.OpenAI(
-    api_key=os.getenv("AI_GATEWAY_API_KEY"),
-    base_url="https://ai-gateway.vercel.sh/v1",
-)
+_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-# Provider-namespaced model id for the gateway.
-MODEL         = "anthropic/claude-sonnet-4-6"
+MODEL         = "claude-sonnet-4-6"
 MAX_TOKENS    = 8096
 MAX_RETRIES   = 3
 RETRY_DELAY   = 5  # seconds
@@ -31,8 +23,8 @@ RETRY_DELAY   = 5  # seconds
 
 def call_llm(system_prompt: str, user_content: str) -> str:
     """
-    Call the model (Anthropic, via the Vercel AI Gateway) with a system prompt
-    and user content. Retries up to MAX_RETRIES times on transient errors.
+    Call the Anthropic API with a system prompt and user content.
+    Retries up to MAX_RETRIES times on transient errors.
 
     Args:
         system_prompt: The agent's system-level instructions.
@@ -43,35 +35,35 @@ def call_llm(system_prompt: str, user_content: str) -> str:
 
     Raises:
         RuntimeError: If all retries are exhausted.
-        openai.APIError: On non-retryable API errors.
+        anthropic.APIError: On non-retryable API errors.
     """
     last_error = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = _client.chat.completions.create(
+            response = _client.messages.create(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
+                system=system_prompt,
                 messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
+                    {"role": "user", "content": user_content}
+                ]
             )
-            return response.choices[0].message.content
+            return response.content[0].text
 
-        except openai.RateLimitError as e:
+        except anthropic.RateLimitError as e:
             last_error = e
             print(f"[llm] Rate limit hit (attempt {attempt}/{MAX_RETRIES}). "
                   f"Retrying in {RETRY_DELAY}s...")
             time.sleep(RETRY_DELAY)
 
-        except openai.InternalServerError as e:
+        except anthropic.InternalServerError as e:
             last_error = e
             print(f"[llm] Server error (attempt {attempt}/{MAX_RETRIES}). "
                   f"Retrying in {RETRY_DELAY}s...")
             time.sleep(RETRY_DELAY)
 
-        except openai.APIError:
+        except anthropic.APIError as e:
             # Non-retryable — surface immediately
             raise
 

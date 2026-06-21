@@ -471,10 +471,35 @@ function CoveragePairsTable({
     reconLower[k.toLowerCase()] = v;
   }
 
+  const matchedFromCsm = csmItems.filter((item) => !missingSet.has(item.toLowerCase())).length;
+  const missingFromCsm = csmItems.filter((item) => missingSet.has(item.toLowerCase())).length;
+  const matchedFromCsv = Object.values(matchedLower).reduce((sum, arr) => sum + arr.length, 0);
+  const extrasFromCsv = csvExtras.length;
+
   return (
     <div className="flex flex-col gap-1.5">
       <div className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground border-b border-border pb-1">
         {label}
+      </div>
+
+      {/* Analytics summary row */}
+      <div className="grid grid-cols-4 gap-1 rounded bg-secondary/50 px-2 py-1.5">
+        <div className="flex flex-col items-center gap-0.5">
+          <span className="text-[11px] font-bold text-emerald-500">{matchedFromCsm}</span>
+          <span className="text-[8px] text-muted-foreground/70 text-center leading-tight">Matched<br/>from CSM</span>
+        </div>
+        <div className="flex flex-col items-center gap-0.5">
+          <span className="text-[11px] font-bold text-rose-500">{missingFromCsm}</span>
+          <span className="text-[8px] text-muted-foreground/70 text-center leading-tight">Missing<br/>from CSM</span>
+        </div>
+        <div className="flex flex-col items-center gap-0.5">
+          <span className="text-[11px] font-bold text-sky-500">{matchedFromCsv}</span>
+          <span className="text-[8px] text-muted-foreground/70 text-center leading-tight">Matched<br/>from CSV</span>
+        </div>
+        <div className="flex flex-col items-center gap-0.5">
+          <span className="text-[11px] font-bold text-amber-500">{extrasFromCsv}</span>
+          <span className="text-[8px] text-muted-foreground/70 text-center leading-tight">Extras<br/>from CSV</span>
+        </div>
       </div>
 
       {/* Header row */}

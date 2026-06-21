@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Header } from "@/components/dashboard/header";
 import { MainPanel } from "@/components/dashboard/main-panel";
 import { RunForm } from "@/components/dashboard/run-form";
@@ -18,6 +19,7 @@ const DEFAULT_FORM: RunFormValues = {
 
 export default function DashboardPage() {
   const [form, setForm] = useState<RunFormValues>(DEFAULT_FORM);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const { runs, refresh } = useRuns();
   const { state, isRunning, startRun, setActiveTab } = usePipeline({
     onRunComplete: refresh,
@@ -27,24 +29,49 @@ export default function DashboardPage() {
     state.status === "idle" && isRunning ? "running" : state.status;
 
   return (
-    <div className="flex min-h-screen flex-col bg-background">
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
       <Header status={displayStatus} runCount={runs.length} />
-      <div className="flex min-h-0 flex-1">
-        <aside className="flex w-[280px] shrink-0 flex-col border-r border-border bg-card">
-          <RunForm
-            form={form}
-            onFormChange={setForm}
-            isRunning={isRunning}
-            onStart={startRun}
-          />
-          <RunHistory runs={runs} />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* Sidebar */}
+        <aside
+          className="relative flex shrink-0 flex-col border-r border-border bg-card transition-all duration-200"
+          style={{ width: sidebarOpen ? 280 : 40 }}
+        >
+          {/* Collapse toggle */}
+          <button
+            onClick={() => setSidebarOpen((p) => !p)}
+            className="absolute -right-3 top-4 z-20 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm hover:text-foreground transition-colors"
+            title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+          >
+            {sidebarOpen ? (
+              <ChevronLeft className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+          </button>
+
+          {sidebarOpen && (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <RunForm
+                form={form}
+                onFormChange={setForm}
+                isRunning={isRunning}
+                onStart={startRun}
+              />
+              <RunHistory runs={runs} />
+            </div>
+          )}
         </aside>
-        <MainPanel
-          state={state.status === "idle" && isRunning ? { ...state, status: "running" } : state}
-          form={form}
-          onStart={startRun}
-          onTabChange={setActiveTab}
-        />
+
+        {/* Main content — scrolls independently */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <MainPanel
+            state={state.status === "idle" && isRunning ? { ...state, status: "running" } : state}
+            form={form}
+            onStart={startRun}
+            onTabChange={setActiveTab}
+          />
+        </div>
       </div>
     </div>
   );
