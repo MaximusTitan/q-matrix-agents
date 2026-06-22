@@ -70,6 +70,10 @@ export interface PipelineState {
   agents: AgentRecord[];
   csv: string | null;
   escalation: EscalationData | null;
+  // How the final CSV was selected among passing candidates.
+  selectedBy?: "single" | "judge";
+  source?: "generated" | "doctored";
+  candidateCount?: number;
 }
 
 export interface RunFormValues {

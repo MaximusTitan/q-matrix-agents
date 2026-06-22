@@ -36,7 +36,15 @@ export function MainPanel({ state, form, onStart, onTabChange }: MainPanelProps)
   return (
     <main className="flex flex-1 flex-col overflow-y-auto p-6">
       <AgentTimeline agents={state.agents} currentAttempt={state.currentAttempt} />
-      {state.csv && <CsvPreview csv={state.csv} chapter={form.chapter} />}
+      {state.csv && (
+        <CsvPreview
+          csv={state.csv}
+          chapter={form.chapter}
+          selectedBy={state.selectedBy}
+          source={state.source}
+          candidateCount={state.candidateCount}
+        />
+      )}
       {state.escalation && (
         <EscalationPanel
           form={form}

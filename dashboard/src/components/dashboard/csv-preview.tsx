@@ -9,6 +9,9 @@ import { cn } from "@/lib/utils";
 interface CsvPreviewProps {
   csv: string;
   chapter: string;
+  selectedBy?: "single" | "judge";
+  source?: "generated" | "doctored";
+  candidateCount?: number;
 }
 
 // maxCols caps the number of columns: once the first (maxCols-1) are filled, any
@@ -57,8 +60,15 @@ function CsvCell({ cell }: { cell: string }) {
   );
 }
 
-export function CsvPreview({ csv, chapter }: CsvPreviewProps) {
+export function CsvPreview({ csv, chapter, selectedBy, source, candidateCount }: CsvPreviewProps) {
   const [expanded, setExpanded] = useState(false);
+
+  const selectionNote =
+    selectedBy === "judge"
+      ? `Chosen by Judge from ${candidateCount ?? 0} candidates`
+      : source === "doctored"
+        ? "Doctored CSV"
+        : null;
 
   const lines = csv.split("\n").filter((l) => l.trim());
   const headers = lines.length > 0 ? parseCSVLine(lines[0]) : [];
@@ -87,6 +97,11 @@ export function CsvPreview({ csv, chapter }: CsvPreviewProps) {
         <Badge variant="outline" className="border-[var(--qm-green)]/40 text-[var(--qm-green)]">
           VALIDATED
         </Badge>
+        {selectionNote && (
+          <Badge variant="outline" className="border-[var(--qm-purple)]/40 text-[var(--qm-purple)]">
+            {selectionNote}
+          </Badge>
+        )}
       </div>
 
       <div className={cn(

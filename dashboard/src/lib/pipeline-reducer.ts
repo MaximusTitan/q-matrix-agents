@@ -93,6 +93,9 @@ export function reduceEvent(
       status: "passed",
       csv: data.csv as string,
       escalation: null,
+      selectedBy: (data.selected_by as "single" | "judge" | undefined) ?? undefined,
+      source: (data.source as "generated" | "doctored" | undefined) ?? undefined,
+      candidateCount: (data.candidate_count as number | undefined) ?? undefined,
     };
   }
 
