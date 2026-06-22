@@ -191,6 +191,44 @@ def load_prompt(board: str, subject: str, grade: str) -> tuple[str, str]:
     return read_file(rules_path), "cold_start"
 
 
+def load_prompt_at_level(board: str, subject: str, grade: str, level: str) -> tuple[str, str]:
+    """
+    Force-load a prompt at a SPECIFIC level, ignoring the normal resolution order.
+
+    Unlike load_prompt (which resolves grade > base > cold by file existence), this
+    loads exactly the level requested. Used by the orchestrator after a Check-2-only
+    revision writes a prompt at a chosen degree: it must regenerate with that exact
+    level, even if a more-specialized (e.g. stale grade) prompt file also exists.
+
+    Args:
+        board:   Education board
+        subject: Subject name
+        grade:   Grade level
+        level:   One of "grade_prompt", "base_prompt", "cold_start"
+
+    Returns:
+        Tuple of (content: str, input_type: str) where input_type == level.
+
+    Raises:
+        ValueError: If level is not one of the three known levels.
+        FileNotFoundError: If the file for the requested level does not exist.
+    """
+    if level == "grade_prompt":
+        path = _grade_prompt_path(board, subject, grade)
+    elif level == "base_prompt":
+        path = _base_prompt_path(board, subject)
+    elif level == "cold_start":
+        path = _universal_rules_path()
+    else:
+        raise ValueError(
+            f"Unknown level: {level}. Must be 'grade_prompt', 'base_prompt', or 'cold_start'."
+        )
+
+    if not file_exists(path):
+        raise FileNotFoundError(f"No prompt found at level '{level}': {path}")
+    return read_file(path), level
+
+
 def save_prompt(board: str, subject: str, content: str, mode: str, grade: str = None) -> None:
     """
     Save a prompt to the appropriate location in the prompt library.
@@ -268,6 +306,7 @@ def write_escalation(
     attempts: int,
     last_csv: str,
     attempt_history: list[dict],
+    doctored_artifacts: list[dict] = None,
 ) -> str:
     """
     Write an escalation report folder to the KB escalations directory.
@@ -290,6 +329,13 @@ def write_escalation(
                                 "missing_concepts": list, "missing_skills": list },
                 "prompt":     str,
             }
+        doctored_artifacts: Optional list of doctored-CSV records from the
+            Check-2-only path, one per doctored attempt:
+            {
+                "attempt": int,
+                "csv":     str,
+                "passed":  bool,   # did the doctored CSV pass re-verification?
+            }
 
     Returns:
         Path to the escalation folder.
@@ -309,6 +355,13 @@ def write_escalation(
     # ── Write last CSV ────────────────────────────────────────────────────────
     csv_path = os.path.join(folder_path, "last_csv.csv")
     write_file(csv_path, last_csv)
+
+    # ── Write doctored CSVs (Check-2-only path) ───────────────────────────────
+    for doc in (doctored_artifacts or []):
+        n = doc.get("attempt")
+        doc_csv = doc.get("csv") or ""
+        if doc_csv:
+            write_file(os.path.join(folder_path, f"doctored_attempt_{n}.csv"), doc_csv)
 
     # ── Build report.md ───────────────────────────────────────────────────────
     history_sections = []
@@ -342,6 +395,25 @@ Missing skills:   {missing_skills}
 
     history_text = "\n---\n\n".join(history_sections)
 
+    # ── Doctored-CSV section (Check-2-only path) ──────────────────────────────
+    doctored_section = ""
+    if doctored_artifacts:
+        lines = []
+        for doc in doctored_artifacts:
+            n      = doc.get("attempt")
+            status = "✓ passed re-verification" if doc.get("passed") else "✗ failed re-verification"
+            has_csv = bool(doc.get("csv"))
+            file_note = f"see `doctored_attempt_{n}.csv`" if has_csv else "schema-invalid — not written"
+            lines.append(f"- Attempt {n}: {status} ({file_note})")
+        doctored_section = (
+            "## Doctored CSVs (Check-2-only repairs)\n\n"
+            "These are surgical patches of the failing CSV produced by the revision agent. "
+            "None passed both checks (otherwise the pipeline would have returned one instead "
+            "of escalating). They are kept for diagnostic review.\n\n"
+            + "\n".join(lines)
+            + "\n\n---\n\n"
+        )
+
     report = f"""# Escalation Report
 
 **Board:** {board}
@@ -359,7 +431,7 @@ Missing skills:   {missing_skills}
 {history_text}
 ---
 
-## Final CSV
+{doctored_section}## Final CSV
 
 See `last_csv.csv` in this folder.
 

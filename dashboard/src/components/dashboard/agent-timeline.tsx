@@ -10,6 +10,9 @@ const AGENT_ICONS: Record<string, string> = {
   Generator: "⚙",
   Eval: "📋",
   Revision: "🔁",
+  Doctor: "🩺",
+  "Eval (doctored)": "📋",
+  Judge: "⚖",
   "Map Extraction": "🗂",
   "Map Extraction + Generator": "⟳",
 };
@@ -18,6 +21,9 @@ const AGENT_COLORS: Record<string, string> = {
   Generator: "var(--qm-blue)",
   Eval: "var(--qm-amber)",
   Revision: "var(--qm-purple)",
+  Doctor: "var(--qm-green)",
+  "Eval (doctored)": "var(--qm-amber)",
+  Judge: "var(--qm-purple)",
   "Map Extraction": "var(--qm-blue)",
   "Map Extraction + Generator": "var(--qm-blue)",
 };
@@ -904,6 +910,232 @@ function EvalCard({ agent }: { agent: AgentRecord }) {
 
 // ── AgentCard ─────────────────────────────────────────────────────────────────
 
+// ── DoctorCard ────────────────────────────────────────────────────────────────
+// Surfaces the Doctor agent's surgical patch: the coverage gaps it set out to fix
+// (missing items to add, extras it weighed) and the resulting patched CSV. Its
+// re-verification is rendered separately by the following "Eval (doctored)" card.
+
+function DoctorCard({ agent }: { agent: AgentRecord }) {
+  const color = AGENT_COLORS["Doctor"];
+  const icon = AGENT_ICONS["Doctor"];
+  const inp = agent.input as Record<string, unknown>;
+  const out = agent.output as Record<string, unknown> | null;
+
+  const asList = (v: unknown): string[] => (Array.isArray(v) ? (v as string[]) : []);
+  const missingConcepts = asList(inp.missing_concepts);
+  const missingSkills   = asList(inp.missing_skills);
+  const extraConcepts   = asList(inp.extra_concepts);
+  const extraSkills     = asList(inp.extra_skills);
+
+  const doctoredCsv = typeof out?.csv_preview === "string" ? (out.csv_preview as string) : null;
+  const error = typeof out?.error === "string" ? (out.error as string) : null;
+
+  return (
+    <Card className="border-border bg-card py-0">
+      <CardHeader className="flex flex-row items-center gap-3 border-b border-border px-4 py-2.5">
+        <div
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-sm"
+          style={{ background: `${color}22`, color }}
+        >
+          {icon}
+        </div>
+        <div className="flex-1 text-xs font-bold" style={{ color }}>
+          {agent.name}
+        </div>
+        {agent.status === "running" ? (
+          <span className="text-[10px] font-bold text-[var(--qm-amber)]">
+            <span className="inline-block animate-spin">⟳</span> RUNNING
+          </span>
+        ) : (
+          <span className="text-[10px] font-bold text-[var(--qm-green)]">✓ DONE</span>
+        )}
+      </CardHeader>
+
+      <CardContent className="grid grid-cols-2 gap-4 px-4 py-3">
+        {/* Input column — the coverage gaps being repaired */}
+        <div className="flex flex-col gap-3">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+            FIXING
+          </div>
+          {missingConcepts.length > 0 && (
+            <MapListSection label="Add — missing concepts" items={missingConcepts} color="var(--qm-red)" />
+          )}
+          {missingSkills.length > 0 && (
+            <MapListSection label="Add — missing skills" items={missingSkills} color="var(--qm-red)" />
+          )}
+          {extraConcepts.length > 0 && (
+            <MapListSection label="Weigh — extra concepts" items={extraConcepts} color="var(--qm-amber)" />
+          )}
+          {extraSkills.length > 0 && (
+            <MapListSection label="Weigh — extra skills" items={extraSkills} color="var(--qm-amber)" />
+          )}
+          {missingConcepts.length === 0 && missingSkills.length === 0 &&
+            extraConcepts.length === 0 && extraSkills.length === 0 && (
+            <div className="text-[10px] text-muted-foreground italic">No gap details</div>
+          )}
+        </div>
+
+        {/* Output column — the patched CSV */}
+        {out ? (
+          <div className="flex flex-col gap-2">
+            <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              PATCHED CSV
+            </div>
+            {error ? (
+              <div className="text-[11px] leading-relaxed text-[var(--qm-red)]">
+                Doctoring failed: {error}
+              </div>
+            ) : (
+              <>
+                {out.rows != null && (
+                  <div className="text-[11px] leading-relaxed">
+                    <span className="text-muted-foreground">rows:</span>{" "}
+                    <span>{String(out.rows)}</span>
+                  </div>
+                )}
+                {doctoredCsv && <CsvInlineEntry csvText={doctoredCsv} />}
+              </>
+            )}
+          </div>
+        ) : (
+          <div />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── JudgeCard ─────────────────────────────────────────────────────────────────
+// Renders the Judge agent's decision among ≥2 passing CSV candidates: each
+// candidate's source/cycle/counts + the judge's note/strengths/concerns, the chosen
+// one highlighted, the overall rationale, and an inline preview of the chosen CSV.
+
+type JudgeCandidate = {
+  id?: string;
+  source?: string;
+  cycle?: number;
+  concept_count?: number;
+  skill_count?: number;
+  csv?: string;
+  verdict?: string;
+  note?: string;
+  strengths?: string[];
+  concerns?: string[];
+};
+
+function JudgeCard({ agent }: { agent: AgentRecord }) {
+  const color = AGENT_COLORS["Judge"];
+  const icon = AGENT_ICONS["Judge"];
+  const out = agent.output as Record<string, unknown> | null;
+
+  const candidates: JudgeCandidate[] = Array.isArray(out?.candidates)
+    ? (out!.candidates as JudgeCandidate[])
+    : [];
+  const rationale = typeof out?.rationale === "string" ? (out.rationale as string) : null;
+  const chosen = candidates.find((c) => c.verdict === "chosen");
+
+  return (
+    <Card className="border-border bg-card py-0">
+      <CardHeader className="flex flex-row items-center gap-3 border-b border-border px-4 py-2.5">
+        <div
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-sm"
+          style={{ background: `${color}22`, color }}
+        >
+          {icon}
+        </div>
+        <div className="flex-1 text-xs font-bold" style={{ color }}>
+          {agent.name}
+        </div>
+        {agent.status === "running" ? (
+          <span className="text-[10px] font-bold text-[var(--qm-amber)]">
+            <span className="inline-block animate-spin">⟳</span> RUNNING
+          </span>
+        ) : (
+          <span className="text-[10px] font-bold text-[var(--qm-green)]">✓ DONE</span>
+        )}
+      </CardHeader>
+
+      <CardContent className="flex flex-col gap-3 px-4 py-3">
+        <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+          {candidates.length} passing candidate{candidates.length !== 1 ? "s" : ""}
+        </div>
+
+        {candidates.map((c, i) => {
+          const isChosen = c.verdict === "chosen";
+          const accent = isChosen ? "var(--qm-green)" : "var(--qm-red)";
+          return (
+            <div
+              key={c.id ?? i}
+              className="rounded border px-3 py-2"
+              style={{
+                borderColor: isChosen ? "var(--qm-green)" : "var(--border)",
+                background: isChosen ? "var(--qm-green)0d" : undefined,
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold text-foreground">{c.id}</span>
+                <span
+                  className="rounded px-1.5 py-0.5 text-[9px] font-bold uppercase"
+                  style={{ background: `${color}22`, color }}
+                >
+                  {c.source}
+                </span>
+                <span className="text-[10px] text-muted-foreground">
+                  {c.concept_count} concepts · {c.skill_count} skills
+                </span>
+                <span className="ml-auto text-[10px] font-bold" style={{ color: accent }}>
+                  {isChosen ? "✓ CHOSEN" : "rejected"}
+                </span>
+              </div>
+
+              {c.note && (
+                <div className="mt-1 text-[10px] leading-relaxed text-foreground/80">{c.note}</div>
+              )}
+
+              {Array.isArray(c.strengths) && c.strengths.length > 0 && (
+                <div className="mt-1">
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-[var(--qm-green)]">
+                    Strengths
+                  </span>
+                  {c.strengths.map((s, j) => (
+                    <div key={j} className="flex items-start gap-1.5 text-[10px] leading-relaxed">
+                      <span className="mt-px shrink-0 text-[9px] text-[var(--qm-green)]">+</span>
+                      <span className="text-foreground/80">{s}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {Array.isArray(c.concerns) && c.concerns.length > 0 && (
+                <div className="mt-1">
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-[var(--qm-red)]">
+                    Concerns
+                  </span>
+                  {c.concerns.map((s, j) => (
+                    <div key={j} className="flex items-start gap-1.5 text-[10px] leading-relaxed">
+                      <span className="mt-px shrink-0 text-[9px] text-[var(--qm-red)]">−</span>
+                      <span className="text-foreground/80">{s}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {rationale && (
+          <div className="text-[10px] leading-relaxed text-foreground/80">
+            <span className="font-bold" style={{ color }}>Decision: </span>
+            {rationale}
+          </div>
+        )}
+
+        {chosen?.csv && <CsvInlineEntry csvText={chosen.csv} />}
+      </CardContent>
+    </Card>
+  );
+}
+
 function AgentCard({ agent }: { agent: AgentRecord }) {
   const color = AGENT_COLORS[agent.name] ?? "var(--qm-blue)";
   const icon = AGENT_ICONS[agent.name] ?? "●";
@@ -989,6 +1221,8 @@ function AgentCard({ agent }: { agent: AgentRecord }) {
 // ── AttemptGroup ──────────────────────────────────────────────────────────────
 
 const MAP_EXTRACTION_NAMES = new Set(["Map Extraction", "Map Extraction + Generator"]);
+// Both the primary eval and the doctored re-verification render with EvalCard.
+const EVAL_NAMES = new Set(["Eval", "Eval (doctored)"]);
 
 function cycleStatus(agents: AgentRecord[]): "running" | "done" | "failed" {
   if (agents.some((a) => a.status === "running")) return "running";
@@ -1060,8 +1294,12 @@ function AttemptGroup({
             {agents.map((agent, i) =>
               MAP_EXTRACTION_NAMES.has(agent.name) ? (
                 <MapExtractionCard key={`${agent.name}-${agent.attempt}-${i}`} agent={agent} />
-              ) : agent.name === "Eval" ? (
+              ) : EVAL_NAMES.has(agent.name) ? (
                 <EvalCard key={`${agent.name}-${agent.attempt}-${i}`} agent={agent} />
+              ) : agent.name === "Doctor" ? (
+                <DoctorCard key={`${agent.name}-${agent.attempt}-${i}`} agent={agent} />
+              ) : agent.name === "Judge" ? (
+                <JudgeCard key={`${agent.name}-${agent.attempt}-${i}`} agent={agent} />
               ) : (
                 <AgentCard key={`${agent.name}-${agent.attempt}-${i}`} agent={agent} />
               )

@@ -14,7 +14,7 @@ Skills used:
 """
 
 import os
-from skills.kb_access import load_curriculum_docs, load_prompt
+from skills.kb_access import load_curriculum_docs, load_prompt, load_prompt_at_level
 from skills.llm import call_llm
 from skills.csv_utils import validate_csv_schema
 
@@ -28,20 +28,26 @@ with open(_PROMPT_PATH, "r", encoding="utf-8") as f:
     SYSTEM_PROMPT = f.read()
 
 
-def run(board: str, subject: str, grade: str, chapter: str) -> dict:
+def run(board: str, subject: str, grade: str, chapter: str, forced_level: str = None) -> dict:
     """
     Generate a curriculum CSV for a given chapter.
 
-    Prompt resolution (handled by kb_access.load_prompt):
-        1. grade-specific prompt  → input_type: grade_prompt
-        2. subject base prompt    → input_type: base_prompt
-        3. cold start (rules)     → input_type: cold_start
+    Prompt resolution:
+        - forced_level is None (default): kb_access.load_prompt resolves by file existence
+            1. grade-specific prompt  → input_type: grade_prompt
+            2. subject base prompt    → input_type: base_prompt
+            3. cold start (rules)     → input_type: cold_start
+        - forced_level set: load that EXACT level via load_prompt_at_level. Used by the
+          orchestrator to honour the subject→grade specialization ladder regardless of which
+          prompt files already exist on disk.
 
     Args:
-        board:   Education board (e.g. "CBSE")
-        subject: Subject name (e.g. "Science")
-        grade:   Grade level (e.g. "Grade8")
-        chapter: Chapter folder name (e.g. "Chapter10_Sound")
+        board:        Education board (e.g. "CBSE")
+        subject:      Subject name (e.g. "Science")
+        grade:        Grade level (e.g. "Grade8")
+        chapter:      Chapter folder name (e.g. "Chapter10_Sound")
+        forced_level: Optional — one of "grade_prompt", "base_prompt", "cold_start".
+                      When set, bypasses normal resolution and loads exactly that level.
 
     Returns:
         Dict with keys:
@@ -60,8 +66,12 @@ def run(board: str, subject: str, grade: str, chapter: str) -> dict:
     curriculum_docs = load_curriculum_docs(board, subject, grade)
     print(f"[generator] Loaded {len(curriculum_docs)} chars of curriculum content")
 
-    # Step 2 — Load best available prompt
-    prompt_content, input_type = load_prompt(board, subject, grade)
+    # Step 2 — Load prompt (forced level, or best available)
+    if forced_level is None:
+        prompt_content, input_type = load_prompt(board, subject, grade)
+    else:
+        prompt_content, input_type = load_prompt_at_level(board, subject, grade, forced_level)
+        print(f"[generator] Forced prompt level: {forced_level}")
     print(f"[generator] Using input_type: {input_type}")
 
     # Step 3 — Build user message

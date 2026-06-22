@@ -13,9 +13,13 @@ produce the same violations again.
 
 The user message will contain:
 
-1. **mode** — either "subject" or "grade"
-   - subject: writing or refining a subject-level base prompt
-   - grade: writing a grade-specific prompt to fix a failure at a specific grade
+1. **mode** — either "subject" or "grade". This is the *generality degree* of the prompt:
+   - subject: writing or refining a subject-level base prompt. Keep it BROAD — it must
+     work across every chapter and grade of the subject. Do NOT bake in chapter-specific
+     concepts or examples.
+   - grade: writing a grade-specific prompt to fix a recurring failure at a specific grade.
+     You may be somewhat more specific to that grade's needs, but still avoid hard-coding a
+     single chapter's concept list.
 
 2. **failed_check** — one of "check1", "check2", or "both"
    - check1: the CSV violated universal rules (skill format, concept quality, etc.)
@@ -44,6 +48,13 @@ For check2 feedback:
 - The generator did not cover enough concepts or skills
 - Strengthen coverage depth and completeness instructions
 - Do not add chapter-specific content — fixes must work generically
+
+If the feedback includes a `[Reference]` block containing a corrected ("doctored") CSV:
+- Treat it as a worked example of what complete coverage looks like for one chapter
+- Learn the *coverage pattern* from it — granularity, how concepts map to skills, when to
+  split a broad topic vs keep an umbrella concept
+- Do NOT copy that chapter's specific concepts into the prompt, especially at subject mode.
+  Generalise the pattern into instructions that improve coverage for ANY chapter.
 
 For "both":
 - Address check1 violations first (structural issues), then check2 gaps (coverage)
