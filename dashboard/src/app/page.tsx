@@ -6,6 +6,7 @@ import { Header } from "@/components/dashboard/header";
 import { MainPanel } from "@/components/dashboard/main-panel";
 import { RunForm } from "@/components/dashboard/run-form";
 import { RunHistory } from "@/components/dashboard/run-history";
+import { RunMetrics } from "@/components/dashboard/run-metrics";
 import { usePipeline } from "@/hooks/use-pipeline";
 import { useRuns } from "@/hooks/use-runs";
 import type { RunFormValues } from "@/lib/types";
@@ -58,6 +59,7 @@ export default function DashboardPage() {
                 isRunning={isRunning}
                 onStart={startRun}
               />
+              <RunMetrics metrics={state.metrics} />
               <RunHistory runs={runs} />
             </div>
           )}

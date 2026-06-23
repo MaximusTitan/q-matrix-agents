@@ -28,7 +28,7 @@ with open(_PROMPT_PATH, "r", encoding="utf-8") as f:
     SYSTEM_PROMPT = f.read()
 
 
-def run(board: str, subject: str, grade: str, chapter: str, forced_level: str = None) -> dict:
+def run(board: str, subject: str, grade: str, chapter: str, forced_level: str = None, model: str = None) -> dict:
     """
     Generate a curriculum CSV for a given chapter.
 
@@ -91,7 +91,7 @@ chapter: {chapter}
 
     # Step 4 — Call LLM
     print(f"[generator] Calling LLM...")
-    raw_csv = call_llm(SYSTEM_PROMPT, user_content)
+    raw_csv, usage = call_llm(SYSTEM_PROMPT, user_content, model=model)
 
     # Step 5 — Strip any markdown fences the LLM might add
     cleaned = raw_csv.strip()
@@ -110,4 +110,5 @@ chapter: {chapter}
         "csv":        cleaned,
         "input_type": input_type,
         "rows":       rows,
+        "usage":      usage,
     }

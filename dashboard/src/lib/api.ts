@@ -1,6 +1,6 @@
 import type { RunFormValues, RunMetadata } from "./types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 async function post<T>(url: string, body: Record<string, unknown>): Promise<T> {
   const res = await fetch(`${API_BASE}${url}`, {
@@ -19,7 +19,7 @@ export function streamUrl(runId: string): string {
 }
 
 export async function postRun(
-  values: RunFormValues & { human_feedback?: string; no_sync?: boolean }
+  values: RunFormValues & { human_feedback?: string; no_sync?: boolean; model?: string }
 ): Promise<{ run_id: string }> {
   return post("/run", { ...values, no_sync: true });
 }

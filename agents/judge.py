@@ -73,6 +73,7 @@ def run(
     subject: str,
     grade: str,
     chapter: str,
+    model: str = None,
 ) -> dict:
     """
     Choose the best CSV among already-passing candidates.
@@ -124,9 +125,21 @@ skills:
 --- CANDIDATES ({len(candidates)}) ---
 {chr(10).join(candidate_blocks)}"""
 
+    usage_totals = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cost": 0.0,
+    }
     result = None
     for attempt in range(2):
-        raw    = call_llm(SYSTEM_PROMPT, user_content)
+        raw, usage = call_llm(SYSTEM_PROMPT, user_content, model=model)
+        usage_totals = {
+            "prompt_tokens": usage_totals["prompt_tokens"] + usage.get("prompt_tokens", 0),
+            "completion_tokens": usage_totals["completion_tokens"] + usage.get("completion_tokens", 0),
+            "total_tokens": usage_totals["total_tokens"] + usage.get("total_tokens", 0),
+            "cost": usage_totals["cost"] + usage.get("cost", 0.0),
+        }
         result = _parse_llm_json(raw)
         if result is not None and result.get("chosen_id") in valid_ids:
             break
@@ -135,7 +148,10 @@ skills:
 
     if result is None:
         print("[judge] LLM output unusable after retry — falling back deterministically")
-        return _fallback_choice(candidates, "judge output unparseable")
+        fallback = _fallback_choice(candidates, "judge output unparseable")
+        fallback["usage"] = usage_totals
+        return fallback
 
     print(f"[judge] Chose {result['chosen_id']}")
+    result["usage"] = usage_totals
     return result

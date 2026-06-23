@@ -73,6 +73,9 @@ export function RunForm({ form, onFormChange, isRunning, onStart }: RunFormProps
   const [subjects, setSubjects] = useState<string[]>([]);
   const [grades, setGrades] = useState<string[]>([]);
   const [chapters, setChapters] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>(
+    "anthropic/claude-sonnet-4.5"
+  );
 
   const [boardState, setBoardState] = useState<LoadState>("loading");
   const [subjectState, setSubjectState] = useState<LoadState>("idle");
@@ -180,10 +183,27 @@ export function RunForm({ form, onFormChange, isRunning, onStart }: RunFormProps
         onChange={handleChapterChange}
       />
 
+      <div className="space-y-1.5">
+        <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          Model
+        </Label>
+        <Select value={selectedModel} onValueChange={(v) => v && setSelectedModel(v)}>
+          <SelectTrigger className="h-8 w-full bg-secondary text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="anthropic/claude-sonnet-4.5">
+              anthropic/claude-sonnet-4.5
+            </SelectItem>
+            <SelectItem value="openai/gpt-4o">openai/gpt-4o</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
       <Button
         className="w-full text-xs font-bold"
         disabled={!canRun}
-        onClick={() => onStart(form)}
+        onClick={() => onStart({ ...form, model: selectedModel })}
       >
         ▶ Run Pipeline
       </Button>

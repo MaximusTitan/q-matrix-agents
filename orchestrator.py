@@ -49,6 +49,15 @@ def _noop(*args, **kwargs):
     pass
 
 
+def _add_usage(target: dict, addition: dict | None) -> None:
+    if not addition:
+        return
+    target["prompt_tokens"] += int(addition.get("prompt_tokens", 0) or 0)
+    target["completion_tokens"] += int(addition.get("completion_tokens", 0) or 0)
+    target["total_tokens"] += int(addition.get("total_tokens", 0) or 0)
+    target["cost"] += float(addition.get("cost", 0.0) or 0.0)
+
+
 def _revision_mode(input_type: str, c1_passed: bool, c2_passed: bool) -> str:
     if not c1_passed:
         return "subject" if input_type in ("cold_start", "base_prompt") else "grade"
@@ -104,6 +113,7 @@ def _doctor_and_record(
     grade: str,
     chapter: str,
     attempt: int,
+    model: str = None,
 ) -> dict:
     """
     Doctor a Check-2-only failing CSV and re-verify it through both checks.
@@ -133,7 +143,7 @@ def _doctor_and_record(
             check2=check2,
             concept_skill_map=csm_data,
             universal_rules=universal_rules,
-            board=board, subject=subject, grade=grade, chapter=chapter,
+            board=board, subject=subject, grade=grade, chapter=chapter, model=model
         )
     except Exception as e:
         print(f"[orchestrator] CSV doctoring errored — {e}")
@@ -165,7 +175,7 @@ def _doctor_and_record(
             "concept_skill_map": csm_data,
         },
     })
-    doc_eval = run_eval(doctored_csv, board, subject, grade, chapter)
+    doc_eval = run_eval(doctored_csv, board, subject, grade, chapter, model=model)
     dc1, dc2 = doc_eval["check1"], doc_eval["check2"]
     emit("agent_completed", {
         "agent":  "Eval (doctored)",
@@ -209,6 +219,7 @@ def run_pipeline(
     subject: str,
     grade: str,
     chapter: str,
+    model: str = None,
     human_feedback: str = None,
     emit=None,
 ) -> dict:
@@ -233,6 +244,13 @@ def run_pipeline(
         "grade": grade, "chapter": chapter,
         "human_feedback": human_feedback,
     })
+
+    run_metrics = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cost": 0.0,
+    }
 
     map_exists            = concept_skill_map_exists(board, subject, grade, chapter)
     current_csv           = None
@@ -270,10 +288,15 @@ def run_pipeline(
             })
 
             with ThreadPoolExecutor(max_workers=2) as executor:
-                future_map = executor.submit(run_map_extraction, board, subject, grade, chapter)
-                future_gen = executor.submit(run_generator,      board, subject, grade, chapter)
+                future_map = executor.submit(run_map_extraction, board, subject, grade, chapter, model=model)
+                future_gen = executor.submit(run_generator,      board, subject, grade, chapter, model=model)
                 map_result = future_map.result()
                 gen_result = future_gen.result()
+
+            if map_result and isinstance(map_result, dict):
+                _add_usage(run_metrics, map_result.get("usage"))
+            if gen_result and isinstance(gen_result, dict):
+                _add_usage(run_metrics, gen_result.get("usage"))
 
             map_exists = True
             emit("agent_completed", {
@@ -299,7 +322,8 @@ def run_pipeline(
         })
 
         if gen_result is None:
-            gen_result = run_generator(board, subject, grade, chapter, forced_level=forced_level)
+            gen_result = run_generator(board, subject, grade, chapter, forced_level=forced_level,model=model)
+            _add_usage(run_metrics, gen_result.get("usage"))
 
         forced_level       = None  # consumed — each forcing applies to exactly one regeneration
         current_csv        = gen_result["csv"]
@@ -331,7 +355,8 @@ def run_pipeline(
             },
         })
 
-        eval_result = run_eval(current_csv, board, subject, grade, chapter)
+        eval_result = run_eval(current_csv, board, subject, grade, chapter, model=model)
+        _add_usage(run_metrics, eval_result.get("usage"))
         c1 = eval_result["check1"]
         c2 = eval_result["check2"]
 
@@ -401,6 +426,7 @@ def run_pipeline(
                     board=board, subject=subject, grade=grade, chapter=chapter,
                     attempt=attempt,
                 )
+                _add_usage(run_metrics, doctored_this_attempt.get("usage"))
                 doctored_artifacts.append({
                     "attempt": attempt,
                     "csv":     doctored_this_attempt["csv"],
@@ -453,13 +479,15 @@ def run_pipeline(
                 "input":   {"failed_check": "check2", "mode": degree, "feedback": feedback},
             })
 
-            revised = run_revision(
+            revised_result = run_revision(
                 current_prompt=prompt_to_revise,
                 feedback=ref_feedback,
                 failed_check="check2",
                 mode=degree,
                 human_feedback=human_feedback if attempt == 1 else None,
             )
+            _add_usage(run_metrics, revised_result.get("usage"))
+            revised = revised_result["prompt"]
             save_prompt(board, subject, revised, mode=save_mode, grade=grade)
             revision_occurred = True
             forced_level      = save_mode  # next generation must use this exact level
@@ -487,13 +515,15 @@ def run_pipeline(
                 "input":   {"failed_check": failed_check, "mode": mode, "feedback": feedback},
             })
 
-            revised = run_revision(
+            revised_result = run_revision(
                 current_prompt=prompt_to_revise,
                 feedback=feedback,
                 failed_check=failed_check,
                 mode=mode,
                 human_feedback=human_feedback if attempt == 1 else None,
             )
+            _add_usage(run_metrics, revised_result.get("usage"))
+            revised = revised_result["prompt"]
 
             save_mode = "grade_prompt" if mode == "grade" else "base_prompt"
             save_prompt(board, subject, revised, mode=save_mode, grade=grade)
@@ -552,8 +582,9 @@ def run_pipeline(
                 candidates=passing_candidates,
                 concept_skill_map=judge_csm,
                 universal_rules=judge_rules,
-                board=board, subject=subject, grade=grade, chapter=chapter,
+                board=board, subject=subject, grade=grade, chapter=chapter, model=model
             )
+            _add_usage(run_metrics, verdict.get("usage"))
             chosen = next(
                 (c for c in passing_candidates if c["id"] == verdict.get("chosen_id")),
                 passing_candidates[0],
@@ -597,6 +628,7 @@ def run_pipeline(
             "selected_by":     selected_by,
             "candidate_count": len(passing_candidates),
             "judge_rationale": judge_rationale,
+            "metrics":         run_metrics,
         })
         return {
             "passed":      True,
@@ -637,6 +669,7 @@ def run_pipeline(
                 "missing_skills":   c2.get("missing_skills", []),
             },
         },
+        "metrics": run_metrics,
     })
 
     return {"passed": False, "csv": current_csv, "attempts": attempt}

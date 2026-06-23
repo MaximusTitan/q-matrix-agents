@@ -62,6 +62,7 @@ def run(
     subject: str,
     grade: str,
     chapter: str,
+    model: str = None,
 ) -> dict:
     """
     Surgically patch a CSV that passed Check 1 but failed Check 2 (CSM coverage).
@@ -108,6 +109,12 @@ skills:
 --- UNIVERSAL RULES ---
 {universal_rules}"""
 
+    usage_totals = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cost": 0.0,
+    }
     last_error = None
     for attempt in range(2):
         user_content = base_user_content
@@ -117,7 +124,14 @@ skills:
                 "Return a corrected, schema-valid CSV. Raw CSV only — no fences, no prose."
             )
 
-        raw = call_llm(SYSTEM_PROMPT, user_content)
+        raw, usage = call_llm(SYSTEM_PROMPT, user_content, model=model)
+        usage_totals = {
+            "prompt_tokens": usage_totals["prompt_tokens"] + usage.get("prompt_tokens", 0),
+            "completion_tokens": usage_totals["completion_tokens"] + usage.get("completion_tokens", 0),
+            "total_tokens": usage_totals["total_tokens"] + usage.get("total_tokens", 0),
+            "cost": usage_totals["cost"] + usage.get("cost", 0.0),
+        }
+
         try:
             rows = validate_csv_schema(raw)  # also strips markdown fences
         except ValueError as e:
@@ -132,7 +146,7 @@ skills:
             ).strip()
 
         print(f"[doctor] Doctored CSV produced ({len(rows)} rows)")
-        return {"csv": cleaned, "rows": rows}
+        return {"csv": cleaned, "rows": rows, "usage": usage_totals}
 
     print("[doctor] Doctoring failed — CSV invalid after retry")
-    return {"csv": None, "error": last_error}
+    return {"csv": None, "error": last_error, "usage": usage_totals}

@@ -32,8 +32,16 @@ export function usePipeline({ onRunComplete }: UsePipelineOptions = {}) {
 
   const startRun = useCallback(
     async (options: StartRunOptions) => {
-      const { board, subject, grade, chapter, humanFeedback, mapGuidance, rejectReason } =
-        options;
+      const {
+        board,
+        subject,
+        grade,
+        chapter,
+        humanFeedback,
+        mapGuidance,
+        rejectReason,
+        model,
+      } = options;
 
       if (!board || !subject || !grade || !chapter) {
         alert("Please fill in all fields.");
@@ -52,13 +60,13 @@ export function usePipeline({ onRunComplete }: UsePipelineOptions = {}) {
         let result: { run_id: string };
 
         if (humanFeedback) {
-          result = await postRun({ ...base, human_feedback: humanFeedback });
+          result = await postRun({ ...base, human_feedback: humanFeedback, model });
         } else if (mapGuidance) {
           result = await postReExtract({ ...base, map_guidance: mapGuidance });
         } else if (rejectReason) {
           result = await postReject({ ...base, reason: rejectReason });
         } else {
-          result = await postRun(base);
+          result = await postRun({ ...base, model });
         }
 
         const { run_id } = result;

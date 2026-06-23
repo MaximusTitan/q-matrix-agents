@@ -51,6 +51,7 @@ class RunRequest(BaseModel):
     subject:        str
     grade:          str
     chapter:        str
+    model:          str | None = None
     human_feedback: str | None = None
     no_sync:        bool       = True  # default True for safety in dev
 
@@ -101,6 +102,7 @@ async def start_run(req: RunRequest):
                 subject=req.subject,
                 grade=req.grade,
                 chapter=req.chapter,
+                model=req.model,
                 human_feedback=req.human_feedback,
                 emit=emit,
             )

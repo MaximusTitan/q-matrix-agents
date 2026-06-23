@@ -50,7 +50,7 @@ def _parse_llm_json(raw: str, check_name: str) -> dict | None:
         return None
 
 
-def run_check1(csv: str, board: str, subject: str, grade: str) -> dict:
+def run_check1(csv: str, board: str, subject: str, grade: str, model: str = None) -> dict:
     """
     Check 1 — Universal rules compliance.
 
@@ -69,7 +69,7 @@ def run_check1(csv: str, board: str, subject: str, grade: str) -> dict:
 {csv}"""
 
     for attempt in range(2):
-        raw    = call_llm(SYSTEM_PROMPT, user_content)
+        raw, usage = call_llm(SYSTEM_PROMPT, user_content, model=model)
         result = _parse_llm_json(raw, "Check 1")
         if result is not None:
             break
@@ -86,7 +86,7 @@ def run_check1(csv: str, board: str, subject: str, grade: str) -> dict:
     feedback = result.get("feedback", [])
 
     print(f"[eval] Check 1: {'PASSED' if passed else 'FAILED'} ({len(feedback)} issue(s))")
-    return {"passed": passed, "feedback": feedback}
+    return {"passed": passed, "feedback": feedback, "usage": usage}
 
 
 def run_check2(csv: str, board: str, subject: str, grade: str, chapter: str) -> dict:
@@ -95,7 +95,7 @@ def run_check2(csv: str, board: str, subject: str, grade: str, chapter: str) -> 
 
     Returns:
         Dict with keys: passed (bool), missing_concepts (list),
-                        missing_skills (list), feedback (list)
+                        missing_skills (list), feedback (list), usage (dict)
     """
     print(f"[eval] Running Check 2 — CSM coverage")
     concept_skill_map = load_concept_skill_map(board, subject, grade, chapter)
@@ -113,6 +113,7 @@ def run(
     subject: str,
     grade: str,
     chapter: str,
+    model: str = None,
 ) -> dict:
     """
     Run Check 1 and Check 2 in parallel.
@@ -128,7 +129,7 @@ def run(
     print(f"[eval] Running Check 1 and Check 2 in parallel...")
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        future_c1 = executor.submit(run_check1, csv, board, subject, grade)
+        future_c1 = executor.submit(run_check1, csv, board, subject, grade, model)
         future_c2 = executor.submit(run_check2, csv, board, subject, grade, chapter)
 
         check1 = future_c1.result()

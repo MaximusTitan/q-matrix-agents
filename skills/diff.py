@@ -261,7 +261,13 @@ def _reconcile(
         + json.dumps({"concepts": concept_cands, "skills": skill_cands}, indent=2)
     )
 
-    raw = call_llm(RECONCILE_PROMPT, user_content)
+    usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cost": 0.0,
+    }
+    raw, usage = call_llm(RECONCILE_PROMPT, user_content)
     try:
         result = json.loads(_strip_fences(raw))
     except json.JSONDecodeError:
@@ -273,6 +279,7 @@ def _reconcile(
                 "concepts": build_detail(missing_concepts, concept_cands, extra_concepts, {}),
                 "skills":   build_detail(missing_skills,   skill_cands,   extra_skills,   {}),
             },
+            "usage": usage,
         }
 
     now_covered_concepts = _normalize_matched(result.get("now_covered_concepts", {}))
@@ -333,7 +340,19 @@ ACTUAL (from generated CSV):
 Concepts: {json.dumps(actual_concepts, indent=2)}
 Skills:   {json.dumps(actual_skills, indent=2)}"""
 
-    raw_response = call_llm(SYSTEM_PROMPT, user_content)
+    usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "cost": 0.0,
+    }
+    raw_response, usage = call_llm(SYSTEM_PROMPT, user_content)
+    usage_totals = {
+        "prompt_tokens": usage.get("prompt_tokens", 0),
+        "completion_tokens": usage.get("completion_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+        "cost": usage.get("cost", 0.0),
+    }
 
     try:
         result = json.loads(_strip_fences(raw_response))
@@ -349,6 +368,7 @@ Skills:   {json.dumps(actual_skills, indent=2)}"""
             "reconciliation":   {"concepts": {}, "skills": {}},
             "feedback":         ["Check 2 evaluation failed — LLM returned unparseable output."],
             "reasoning":        "Parse error",
+            "usage":           usage_totals,
         }
 
     missing_concepts  = result.get("missing_concepts",  [])
@@ -366,6 +386,18 @@ Skills:   {json.dumps(actual_skills, indent=2)}"""
     if missing_concepts or missing_skills:
         recon = _reconcile(missing_concepts, missing_skills, extra_concepts, extra_skills)
         reconciliation = recon["detail"]
+        recon_usage = recon.get("usage", {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost": 0.0,
+        })
+        usage_totals = {
+            "prompt_tokens": usage_totals["prompt_tokens"] + recon_usage.get("prompt_tokens", 0),
+            "completion_tokens": usage_totals["completion_tokens"] + recon_usage.get("completion_tokens", 0),
+            "total_tokens": usage_totals["total_tokens"] + recon_usage.get("total_tokens", 0),
+            "cost": usage_totals["cost"] + recon_usage.get("cost", 0.0),
+        }
 
         for expected, covering in recon["now_covered_concepts"].items():
             if expected in missing_concepts:
@@ -403,4 +435,5 @@ Skills:   {json.dumps(actual_skills, indent=2)}"""
         "reconciliation":   reconciliation,
         "feedback":         feedback,
         "reasoning":        reasoning,
+        "usage":           usage_totals,
     }

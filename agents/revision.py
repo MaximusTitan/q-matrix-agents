@@ -36,6 +36,7 @@ def run(
     failed_check: str,
     mode: str,
     human_feedback: str = None,
+    model: str = None,
 ) -> str:
     """
     Rewrite a generation prompt based on eval feedback.
@@ -77,6 +78,6 @@ def run(
 4. feedback:
 {feedback_text}{human_section}"""
 
-    revised = call_llm(SYSTEM_PROMPT, user_content)
+    revised, usage = call_llm(SYSTEM_PROMPT, user_content, model=model)
     print(f"[revision] Revised prompt generated ({len(revised)} chars)")
-    return revised.strip()
+    return {"prompt": revised.strip(), "usage": usage}

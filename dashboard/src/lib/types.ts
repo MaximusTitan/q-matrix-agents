@@ -61,6 +61,13 @@ export interface EscalationData {
   error?: string;
 }
 
+export interface UsageMetrics {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost: number;
+}
+
 export interface PipelineState {
   runId: string | null;
   status: PipelineStatus;
@@ -70,6 +77,7 @@ export interface PipelineState {
   agents: AgentRecord[];
   csv: string | null;
   escalation: EscalationData | null;
+  metrics?: UsageMetrics | null;
   // How the final CSV was selected among passing candidates.
   selectedBy?: "single" | "judge";
   source?: "generated" | "doctored";
@@ -101,4 +109,5 @@ export interface StartRunOptions extends RunFormValues {
   humanFeedback?: string;
   mapGuidance?: string;
   rejectReason?: string;
+  model?: string;
 }

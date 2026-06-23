@@ -4,6 +4,7 @@ import type {
   EscalationData,
   PipelineEvent,
   PipelineState,
+  UsageMetrics,
 } from "./types";
 
 export const initialPipelineState: PipelineState = {
@@ -15,6 +16,7 @@ export const initialPipelineState: PipelineState = {
   agents: [],
   csv: null,
   escalation: null,
+  metrics: null,
 };
 
 export function reduceEvent(
@@ -93,6 +95,7 @@ export function reduceEvent(
       status: "passed",
       csv: data.csv as string,
       escalation: null,
+      metrics: (data.metrics as UsageMetrics | undefined) ?? null,
       selectedBy: (data.selected_by as "single" | "judge" | undefined) ?? undefined,
       source: (data.source as "generated" | "doctored" | undefined) ?? undefined,
       candidateCount: (data.candidate_count as number | undefined) ?? undefined,
@@ -104,6 +107,7 @@ export function reduceEvent(
       ...state,
       status: "escalated",
       escalation: data as EscalationData,
+      metrics: (data.metrics as UsageMetrics | undefined) ?? null,
     };
   }
 
