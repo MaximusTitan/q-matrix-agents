@@ -15,6 +15,7 @@ const AGENT_ICONS: Record<string, string> = {
   Judge: "⚖",
   "Map Extraction": "🗂",
   "Map Extraction + Generator": "⟳",
+  Prerequisites: "🔗",
 };
 
 const AGENT_COLORS: Record<string, string> = {
@@ -26,6 +27,7 @@ const AGENT_COLORS: Record<string, string> = {
   Judge: "var(--qm-purple)",
   "Map Extraction": "var(--qm-blue)",
   "Map Extraction + Generator": "var(--qm-blue)",
+  Prerequisites: "var(--qm-green)",
 };
 
 // Keys filtered from the generic IO display (handled by dedicated sub-components)

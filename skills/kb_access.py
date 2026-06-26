@@ -32,6 +32,9 @@ def _textbook_path(board: str, subject: str, grade: str, chapter: str) -> str:
 def _csm_path(board: str, subject: str, grade: str, chapter: str) -> str:
     return os.path.join(_textbook_path(board, subject, grade, chapter), "concept-skill-map.json")
 
+def _confirmed_csv_path(board: str, subject: str, grade: str, chapter: str) -> str:
+    return os.path.join(_textbook_path(board, subject, grade, chapter), "confirmed_curriculum.csv")
+
 def _chapter_pdf_path(board: str, subject: str, grade: str, chapter: str) -> str:
     return os.path.join(_textbook_path(board, subject, grade, chapter), "chapter.pdf")
 
@@ -161,6 +164,56 @@ def save_concept_skill_map(board: str, subject: str, grade: str, chapter: str, d
     create_directory(os.path.dirname(path))
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+# ─── Confirmed Curriculum CSV ────────────────────────────────────────────────
+
+def confirmed_csv_exists(board: str, subject: str, grade: str, chapter: str) -> bool:
+    """
+    Check whether a confirmed_curriculum.csv exists for a chapter.
+
+    Returns:
+        True if it exists, False otherwise.
+    """
+    return file_exists(_confirmed_csv_path(board, subject, grade, chapter))
+
+
+def load_confirmed_csv(board: str, subject: str, grade: str, chapter: str) -> str:
+    """
+    Load the confirmed (prerequisite-enriched) curriculum CSV text for a chapter.
+
+    Returns:
+        The CSV text.
+
+    Raises:
+        FileNotFoundError: If the confirmed CSV does not exist.
+    """
+    path = _confirmed_csv_path(board, subject, grade, chapter)
+    if not file_exists(path):
+        raise FileNotFoundError(f"confirmed_curriculum.csv not found: {path}")
+    return read_file(path)
+
+
+def save_confirmed_csv(board: str, subject: str, grade: str, chapter: str, csv_text: str) -> str:
+    """
+    Write the confirmed (prerequisite-enriched) curriculum CSV to the KB.
+    This is the persisted checkpoint for a chapter once its CSV is confirmed.
+    Overwrites any existing file — the latest confirmation wins.
+
+    Args:
+        board, subject, grade, chapter: identifiers
+        csv_text: The enriched CSV string to write.
+
+    Returns:
+        The path the CSV was written to.
+
+    Raises:
+        OSError: If the file cannot be written.
+    """
+    path = _confirmed_csv_path(board, subject, grade, chapter)
+    create_directory(os.path.dirname(path))
+    write_file(path, csv_text)
+    return path
 
 
 # ─── Prompt Library ──────────────────────────────────────────────────────────

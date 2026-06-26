@@ -26,6 +26,7 @@ from agents.eval           import run as run_eval
 from agents.revision       import run as run_revision
 from agents.doctor         import run as run_doctor
 from agents.judge          import run as run_judge
+from agents.prerequisite   import run as run_prerequisite, L1_COLUMNS
 
 from skills.kb_access import (
     concept_skill_map_exists,
@@ -37,7 +38,9 @@ from skills.kb_access import (
     append_grade_rule,
     write_escalation,
     save_extraction_guidance,
+    save_confirmed_csv,
 )
+from skills.csv_utils import parse_csv, enriched_csv_to_text
 from skills.git_sync import pull_kb, push_kb
 
 MAX_ATTEMPTS = 3
@@ -53,6 +56,68 @@ def _revision_mode(input_type: str, c1_passed: bool, c2_passed: bool) -> str:
     if not c1_passed:
         return "subject" if input_type in ("cold_start", "base_prompt") else "grade"
     return "grade"
+
+
+def _run_prerequisite_phase(board, subject, grade, chapter, attempt, csv_text, emit):
+    """
+    Run Level-1 (within-chapter) prerequisite mapping on a confirmed CSV, persist the
+    enriched CSV checkpoint, and emit Prerequisites agent events.
+
+    A failure here must NOT escalate an already-confirmed run: on any error we persist the
+    base CSV with empty prerequisite columns and continue.
+
+    Returns:
+        (final_csv: str, checkpoint_path: str | None)
+    """
+    emit("agent_started", {
+        "agent":   "Prerequisites",
+        "attempt": attempt,
+        "input":   {"level": "L1 (within-chapter)"},
+    })
+
+    try:
+        rows = parse_csv(csv_text)
+    except Exception as e:
+        print(f"[orchestrator] Prerequisite phase skipped — CSV parse failed: {e}")
+        emit("agent_completed", {
+            "agent":  "Prerequisites",
+            "output": {"error": f"CSV parse failed: {e}", "checkpoint": None},
+        })
+        return csv_text, None
+
+    try:
+        result = run_prerequisite(rows, board, subject, grade, chapter)
+        enriched_rows = result["rows"]
+        warnings      = result.get("warnings", [])
+        concept_edges = result.get("concept_edges", {})
+        skill_edges   = result.get("skill_edges", {})
+    except Exception as e:
+        # Defensive: the agent is built to self-recover, but never let it break a pass.
+        print(f"[orchestrator] Prerequisite mapping failed — persisting empty columns: {e}")
+        enriched_rows = [{**r, L1_COLUMNS[0]: [], L1_COLUMNS[1]: []} for r in rows]
+        warnings      = [f"prerequisite agent error: {e}"]
+        concept_edges = {}
+        skill_edges   = {}
+
+    final_csv = enriched_csv_to_text(enriched_rows, L1_COLUMNS)
+
+    checkpoint = None
+    try:
+        checkpoint = save_confirmed_csv(board, subject, grade, chapter, final_csv)
+        print(f"[orchestrator] Saved confirmed CSV checkpoint: {checkpoint}")
+    except Exception as e:
+        print(f"[orchestrator] Warning: failed to persist confirmed CSV — {e}")
+
+    emit("agent_completed", {
+        "agent": "Prerequisites",
+        "output": {
+            "concept_edge_count": sum(len(v) for v in concept_edges.values()),
+            "skill_edge_count":   sum(len(v) for v in skill_edges.values()),
+            "warnings":           warnings,
+            "checkpoint":         checkpoint,
+        },
+    })
+    return final_csv, checkpoint
 
 
 def _failed_check_label(c1_passed: bool, c2_passed: bool) -> str:
@@ -76,6 +141,35 @@ def _collect_feedback(c1: dict, c2: dict) -> list[str]:
         for s in missing_skills:
             feedback.append(f"[Check 2]   - {s}")
     return feedback
+
+
+def _coverage_regressions(before: dict, after: dict) -> dict:
+    """
+    Detect coverage the Doctor *broke*: items that were matched in the pre-doctor
+    Check 2 but are reported missing in the re-evaluated (post-doctor) Check 2.
+
+    The Doctor regenerates the whole CSV to close a gap, so it can rewrite the
+    `concept`/`skill` text that was carrying a prior match (especially a 1:N
+    "umbrella" match where one actual item covered several expected items). When
+    that text changes, the fresh Check-2 pass can no longer match those expected
+    items and they flip matched → missing — a net-negative edit.
+
+    Args:
+        before: pre-doctor check2 dict (has matched_concepts/matched_skills).
+        after:  post-doctor check2 dict (has missing_concepts/missing_skills).
+
+    Returns:
+        {"concepts": [...], "skills": [...]} — expected items newly lost.
+    """
+    matched_concepts_before = set((before.get("matched_concepts") or {}).keys())
+    matched_skills_before   = set((before.get("matched_skills")   or {}).keys())
+    missing_concepts_after  = set(after.get("missing_concepts") or [])
+    missing_skills_after    = set(after.get("missing_skills")   or [])
+
+    return {
+        "concepts": sorted(matched_concepts_before & missing_concepts_after),
+        "skills":   sorted(matched_skills_before   & missing_skills_after),
+    }
 
 
 def _candidate(source: str, cycle: int, csv: str, rows: list) -> dict:
@@ -167,6 +261,20 @@ def _doctor_and_record(
     })
     doc_eval = run_eval(doctored_csv, board, subject, grade, chapter)
     dc1, dc2 = doc_eval["check1"], doc_eval["check2"]
+
+    # ── Regression guard ───────────────────────────────────────────────────────
+    # Did the Doctor break coverage that the pre-doctor CSV already had? Compare the
+    # re-evaluated Check 2 against the matches we came in with. Any matched → missing
+    # flip is a net-negative edit (typically the Doctor rewrote text that was carrying
+    # a 1:N umbrella match). We surface it so the doctored CSV isn't trusted downstream.
+    regressions = _coverage_regressions(check2, dc2)
+    regressed   = bool(regressions["concepts"] or regressions["skills"])
+    if regressed:
+        print(f"[orchestrator] ⚠ Doctor REGRESSED coverage — "
+              f"{len(regressions['concepts'])} concept(s), {len(regressions['skills'])} skill(s) "
+              f"were matched before doctoring but are now missing: "
+              f"{', '.join(regressions['concepts'] + regressions['skills'])}")
+
     emit("agent_completed", {
         "agent":  "Eval (doctored)",
         "output": {
@@ -175,22 +283,33 @@ def _doctor_and_record(
                 "feedback": dc1["feedback"],
             },
             "check2": {
-                "passed":           dc2["passed"],
-                "feedback":         dc2.get("feedback",         []),
-                "missing_concepts": dc2.get("missing_concepts", []),
-                "missing_skills":   dc2.get("missing_skills",   []),
-                "matched_concepts": dc2.get("matched_concepts", {}),
-                "matched_skills":   dc2.get("matched_skills",   {}),
-                "extra_concepts":   dc2.get("extra_concepts",   []),
-                "extra_skills":     dc2.get("extra_skills",     []),
-                "reconciliation":   dc2.get("reconciliation",   {"concepts": {}, "skills": {}}),
+                "passed":             dc2["passed"],
+                "feedback":           dc2.get("feedback",         []),
+                "missing_concepts":   dc2.get("missing_concepts", []),
+                "missing_skills":     dc2.get("missing_skills",   []),
+                "matched_concepts":   dc2.get("matched_concepts", {}),
+                "matched_skills":     dc2.get("matched_skills",   {}),
+                "extra_concepts":     dc2.get("extra_concepts",   []),
+                "extra_skills":       dc2.get("extra_skills",     []),
+                "reconciliation":     dc2.get("reconciliation",   {"concepts": {}, "skills": {}}),
+                "regressed":          regressed,
+                "regressed_concepts": regressions["concepts"],
+                "regressed_skills":   regressions["skills"],
             },
         },
     })
     print(f"[orchestrator] Doctored CSV re-verify — "
-          f"check1 {'✓' if dc1['passed'] else '✗'}, check2 {'✓' if dc2['passed'] else '✗'}")
+          f"check1 {'✓' if dc1['passed'] else '✗'}, check2 {'✓' if dc2['passed'] else '✗'}"
+          f"{' (REGRESSED)' if regressed else ''}")
 
-    return {"csv": doctored_csv, "passed": doc_eval["passed"], "rows": doc["rows"]}
+    return {
+        "csv":                doctored_csv,
+        "passed":             doc_eval["passed"],
+        "rows":               doc["rows"],
+        "regressed":          regressed,
+        "regressed_concepts": regressions["concepts"],
+        "regressed_skills":   regressions["skills"],
+    }
 
 
 def _print_header(board, subject, grade, chapter, extra=None):
@@ -402,9 +521,10 @@ def run_pipeline(
                     attempt=attempt,
                 )
                 doctored_artifacts.append({
-                    "attempt": attempt,
-                    "csv":     doctored_this_attempt["csv"],
-                    "passed":  doctored_this_attempt["passed"],
+                    "attempt":   attempt,
+                    "csv":       doctored_this_attempt["csv"],
+                    "passed":    doctored_this_attempt["passed"],
+                    "regressed": doctored_this_attempt.get("regressed", False),
                 })
                 if doctored_this_attempt["passed"]:
                     passing_candidates.append(
@@ -440,7 +560,13 @@ def run_pipeline(
             degree    = "subject" if check2_only_revisions == 1 else "grade"
             save_mode = "base_prompt" if degree == "subject" else "grade_prompt"
 
-            reference_csv = doctored_this_attempt["csv"] or current_csv
+            # A doctored CSV that REGRESSED coverage (broke prior matches) is a worse
+            # reference than the generation it came from — fall back to current_csv so
+            # the generalized prompt learns from the better-covered example.
+            if doctored_this_attempt.get("regressed") or not doctored_this_attempt["csv"]:
+                reference_csv = current_csv
+            else:
+                reference_csv = doctored_this_attempt["csv"]
             ref_feedback  = feedback + [
                 "[Reference] A corrected (doctored) CSV that satisfies coverage for this "
                 "chapter is shown below. Generalise its coverage pattern — do NOT copy its "
@@ -590,20 +716,27 @@ def run_pipeline(
             print(f"[orchestrator] Judge selected {chosen['id']} "
                   f"from {len(passing_candidates)} candidates")
 
+        # ── Prerequisite mapping (Level 1, within-chapter) + persist checkpoint ──
+        final_csv, checkpoint = _run_prerequisite_phase(
+            board, subject, grade, chapter, attempt, chosen["csv"], emit
+        )
+
         emit("pipeline_passed", {
             "attempt":         attempt,
-            "csv":             chosen["csv"],
+            "csv":             final_csv,
             "source":          chosen["source"],
             "selected_by":     selected_by,
             "candidate_count": len(passing_candidates),
             "judge_rationale": judge_rationale,
+            "checkpoint":      checkpoint,
         })
         return {
             "passed":      True,
-            "csv":         chosen["csv"],
+            "csv":         final_csv,
             "attempts":    attempt,
             "source":      chosen["source"],
             "selected_by": selected_by,
+            "checkpoint":  checkpoint,
         }
 
     # ── Escalate ──────────────────────────────────────────────────────────────
