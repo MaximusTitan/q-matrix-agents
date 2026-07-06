@@ -11,6 +11,7 @@ const nextConfig: NextConfig = {
       { source: "/runs", destination: `${API_URL}/runs` },
       { source: "/runs/:path*", destination: `${API_URL}/runs/:path*` },
       { source: "/stream/:runId", destination: `${API_URL}/stream/:runId` },
+      { source: "/kb/:path*", destination: `${API_URL}/kb/:path*` },
     ];
   },
 };
