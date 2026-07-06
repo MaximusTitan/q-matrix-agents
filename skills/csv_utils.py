@@ -64,6 +64,20 @@ def validate_csv_schema(raw_text: str) -> list[dict]:
     """
     rows = parse_csv(raw_text)
 
+    # csv.DictReader collects any fields beyond the header count under a None key
+    # (usually an unescaped comma inside a concept/skill). Detect those malformed
+    # rows and raise a ValueError — otherwise the None key crashes the sorted()
+    # column checks below with "'<' not supported between instances of 'NoneType'
+    # and 'str'", a TypeError that escapes callers' ValueError-only retry loops.
+    malformed = [i for i, row in enumerate(rows, start=2) if None in row]
+    if malformed:
+        raise ValueError(
+            f"CSV has {len(malformed)} row(s) with more fields than headers "
+            f"(row(s) {', '.join(map(str, malformed[:10]))}"
+            f"{', ...' if len(malformed) > 10 else ''}); "
+            "a field containing a comma must be wrapped in double quotes."
+        )
+
     # Check columns
     actual_columns = set(rows[0].keys())
     missing_columns = REQUIRED_COLUMNS - actual_columns
@@ -77,7 +91,9 @@ def validate_csv_schema(raw_text: str) -> list[dict]:
     errors = []
     for i, row in enumerate(rows, start=2):  # start=2 because row 1 is headers
         for col in REQUIRED_COLUMNS:
-            if not row.get(col, "").strip():
+            # A row with fewer fields than headers gets None-valued cells (DictReader
+            # restval), so guard against .strip() on None as well as missing keys.
+            if not (row.get(col) or "").strip():
                 errors.append(f"Row {i}: '{col}' is empty.")
 
     if errors:

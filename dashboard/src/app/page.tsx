@@ -1,14 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Header } from "@/components/dashboard/header";
 import { MainPanel } from "@/components/dashboard/main-panel";
+import { QueuePanel } from "@/components/dashboard/queue-panel";
 import { RunForm } from "@/components/dashboard/run-form";
 import { RunHistory } from "@/components/dashboard/run-history";
 import { usePipeline } from "@/hooks/use-pipeline";
+import { useChapterQueue } from "@/hooks/use-chapter-queue";
 import { useRuns } from "@/hooks/use-runs";
-import type { RunFormValues } from "@/lib/types";
+import type { RunFormValues, RunOutcome } from "@/lib/types";
 
 const DEFAULT_FORM: RunFormValues = {
   board: "",
@@ -21,9 +23,27 @@ export default function DashboardPage() {
   const [form, setForm] = useState<RunFormValues>(DEFAULT_FORM);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const { runs, refresh } = useRuns();
+
+  // Bridge the run→queue completion cycle: usePipeline needs a completion callback,
+  // but the queue (which owns that callback) needs startRun/isRunning from usePipeline.
+  const queueCompleteRef = useRef<(outcome: RunOutcome) => void>(() => {});
+
+  const handleRunComplete = useCallback(
+    (outcome: RunOutcome) => {
+      refresh();
+      queueCompleteRef.current(outcome);
+    },
+    [refresh]
+  );
+
   const { state, isRunning, startRun, setActiveTab } = usePipeline({
-    onRunComplete: refresh,
+    onRunComplete: handleRunComplete,
   });
+
+  const queue = useChapterQueue({ startRun, isRunning });
+  useEffect(() => {
+    queueCompleteRef.current = queue.handleRunComplete;
+  }, [queue.handleRunComplete]);
 
   const displayStatus =
     state.status === "idle" && isRunning ? "running" : state.status;
@@ -57,6 +77,15 @@ export default function DashboardPage() {
                 onFormChange={setForm}
                 isRunning={isRunning}
                 onStart={startRun}
+                onEnqueue={queue.enqueue}
+              />
+              <QueuePanel
+                queue={queue.queue}
+                processing={queue.processing}
+                isRunning={isRunning}
+                onRun={queue.start}
+                onClear={queue.clear}
+                onRemove={queue.remove}
               />
               <RunHistory runs={runs} />
             </div>

@@ -27,6 +27,11 @@ _PROMPT_PATH = os.path.join(
 with open(_PROMPT_PATH, "r", encoding="utf-8") as f:
     SYSTEM_PROMPT = f.read()
 
+# The model occasionally emits prose/reasoning instead of a pure CSV. A corrective
+# re-prompt almost always fixes it, so generation is retried up to this many times
+# before giving up and raising.
+_MAX_GEN_ATTEMPTS = 3
+
 
 def run(board: str, subject: str, grade: str, chapter: str, forced_level: str = None) -> dict:
     """
@@ -89,25 +94,48 @@ chapter: {chapter}
 --- CURRICULUM DOCUMENTATION ---
 {curriculum_docs}"""
 
-    # Step 4 — Call LLM
-    print(f"[generator] Calling LLM...")
-    raw_csv = call_llm(SYSTEM_PROMPT, user_content)
+    # Steps 4–6 — Call the LLM, strip fences, validate. Retry with a corrective
+    # re-prompt when the model returns non-CSV output (prose, reasoning, etc.)
+    # so a single chatty response doesn't fail the whole pipeline run.
+    correction = ""
+    last_error: ValueError | None = None
+    for gen_attempt in range(1, _MAX_GEN_ATTEMPTS + 1):
+        print(f"[generator] Calling LLM (attempt {gen_attempt}/{_MAX_GEN_ATTEMPTS})...")
+        raw_csv = call_llm(SYSTEM_PROMPT, user_content + correction)
 
-    # Step 5 — Strip any markdown fences the LLM might add
-    cleaned = raw_csv.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        cleaned = "\n".join(
-            l for l in lines if not l.strip().startswith("```")
-        ).strip()
+        # Strip any markdown fences the LLM might add
+        cleaned = raw_csv.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            cleaned = "\n".join(
+                l for l in lines if not l.strip().startswith("```")
+            ).strip()
 
-    # Step 6 — Validate schema
-    print(f"[generator] Validating CSV schema...")
-    rows = validate_csv_schema(cleaned)
-    print(f"[generator] Generated {len(rows)} concept-skill rows")
+        print(f"[generator] Validating CSV schema...")
+        try:
+            rows = validate_csv_schema(cleaned)
+        except ValueError as e:
+            last_error = e
+            print(f"[generator] Invalid CSV on attempt {gen_attempt}/{_MAX_GEN_ATTEMPTS}: {e}")
+            correction = (
+                "\n\n--- IMPORTANT ---\n"
+                f"Your previous response was rejected as invalid CSV: {e}\n"
+                "Respond with ONLY the CSV: a header row of exactly "
+                "board,subject,grade,chapter,concept,skill followed by data rows. "
+                "No prose, no explanation, no markdown fences. Wrap any field that "
+                "contains a comma in double quotes."
+            )
+            continue
 
-    return {
-        "csv":        cleaned,
-        "input_type": input_type,
-        "rows":       rows,
-    }
+        print(f"[generator] Generated {len(rows)} concept-skill rows")
+        return {
+            "csv":        cleaned,
+            "input_type": input_type,
+            "rows":       rows,
+        }
+
+    # Exhausted retries — surface a single ValueError for the orchestrator to handle.
+    raise ValueError(
+        f"Generator failed to produce a valid CSV after {_MAX_GEN_ATTEMPTS} attempts. "
+        f"Last error: {last_error}"
+    )
