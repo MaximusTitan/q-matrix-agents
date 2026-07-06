@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { BarChart3 } from "lucide-react";
 import type { PipelineStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -39,6 +41,15 @@ export function Header({ status, runCount }: HeaderProps) {
           {runCount} run{runCount !== 1 ? "s" : ""}
         </span>
         <span>{statusLabel(status)}</span>
+        <Link
+          href="/analytics"
+          target="_blank"
+          rel="noopener"
+          title="Chapter analytics — pipeline history from q-matrix-kb"
+          className="flex h-7 w-7 items-center justify-center rounded border border-border text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
+        >
+          <BarChart3 className="h-4 w-4" />
+        </Link>
       </div>
     </header>
   );

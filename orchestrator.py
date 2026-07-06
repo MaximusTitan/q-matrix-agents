@@ -25,6 +25,7 @@ from agents.generator      import run as run_generator
 from agents.eval           import run as run_eval
 from agents.revision       import run as run_revision
 from agents.doctor         import run as run_doctor
+from agents.rules_doctor   import run as run_rules_doctor
 from agents.judge          import run as run_judge
 from agents.prerequisite   import run as run_prerequisite, L1_COLUMNS
 
@@ -40,7 +41,7 @@ from skills.kb_access import (
     save_extraction_guidance,
     save_confirmed_csv,
 )
-from skills.csv_utils import parse_csv, enriched_csv_to_text
+from skills.csv_utils import parse_csv, enriched_csv_to_text, validate_csv_schema
 from skills.git_sync import pull_kb, push_kb
 
 MAX_ATTEMPTS = 3
@@ -118,6 +119,91 @@ def _run_prerequisite_phase(board, subject, grade, chapter, attempt, csv_text, e
         },
     })
     return final_csv, checkpoint
+
+
+_IDENTIFIER_COLUMNS = ("board", "subject", "grade", "chapter")
+
+
+def _identifiers_from_rows(rows: list[dict]) -> tuple[str, str, str, str]:
+    """
+    Derive (board, subject, grade, chapter) from parsed curriculum rows.
+
+    A curriculum CSV carries these four identifier columns on every row. For the
+    "bring your own CSV" path we read them straight from the data instead of asking
+    the user to re-select them. Every row must agree and none may be blank.
+
+    Raises:
+        ValueError: if any identifier column is blank or differs across rows.
+    """
+    if not rows:
+        raise ValueError("CSV has no data rows to derive identifiers from.")
+
+    values = {}
+    for col in _IDENTIFIER_COLUMNS:
+        seen = {(r.get(col) or "").strip() for r in rows}
+        if "" in seen:
+            raise ValueError(f"Column '{col}' is blank in at least one row.")
+        if len(seen) > 1:
+            raise ValueError(
+                f"Column '{col}' is not consistent across all rows "
+                f"(found {len(seen)} distinct values: {', '.join(sorted(seen))}). "
+                "A single run must cover one board/subject/grade/chapter."
+            )
+        values[col] = seen.pop()
+
+    return values["board"], values["subject"], values["grade"], values["chapter"]
+
+
+def run_prerequisite_only(csv_text: str, emit=None) -> dict:
+    """
+    "Bring your own curriculum CSV" entry point: skip Stage 1 (generation + checks)
+    and run ONLY Stage 2 (Level-1 within-chapter prerequisite mapping) on a CSV the
+    user pasted or uploaded.
+
+    The CSV must use the same 6 base columns the Generator emits
+    (board, subject, grade, chapter, concept, skill). The four identifier columns are
+    derived from the rows — no separate selection needed. Streams the same events the
+    full pipeline does so the dashboard renders identically.
+
+    Returns:
+        {"passed": True, "csv": enriched_csv, "checkpoint": path} on success,
+        {"passed": False, "error": message} if the CSV is invalid.
+    """
+    if emit is None:
+        emit = _noop
+
+    try:
+        rows = validate_csv_schema(csv_text)  # 6 base columns, no empty required fields
+        board, subject, grade, chapter = _identifiers_from_rows(rows)
+    except ValueError as e:
+        print(f"[orchestrator] run_prerequisite_only — invalid CSV: {e}")
+        emit("error", {"message": f"Invalid curriculum CSV: {e}"})
+        return {"passed": False, "error": str(e)}
+
+    _print_header(board, subject, grade, chapter, extra="Mode: prerequisite-only (Stage 1 skipped)")
+
+    emit("pipeline_started", {
+        "board": board, "subject": subject,
+        "grade": grade, "chapter": chapter,
+        "human_feedback": None,
+    })
+    emit("attempt_started", {"attempt": 1, "max_attempts": 1})
+
+    final_csv, checkpoint = _run_prerequisite_phase(
+        board, subject, grade, chapter, attempt=1, csv_text=csv_text, emit=emit
+    )
+
+    emit("pipeline_passed", {
+        "attempt":         1,
+        "csv":             final_csv,
+        "source":          "user_provided",
+        "selected_by":     "single",
+        "candidate_count": 1,
+        "judge_rationale": None,
+        "checkpoint":      checkpoint,
+    })
+    print(f"\n[orchestrator] ✓ Prerequisite-only run complete")
+    return {"passed": True, "csv": final_csv, "checkpoint": checkpoint}
 
 
 def _failed_check_label(c1_passed: bool, c2_passed: bool) -> str:
@@ -275,6 +361,23 @@ def _doctor_and_record(
               f"were matched before doctoring but are now missing: "
               f"{', '.join(regressions['concepts'] + regressions['skills'])}")
 
+    # ── Diagnose a doctored Check-2 failure ─────────────────────────────────────
+    # If the patch still doesn't cover the map, classify why so the next run is
+    # debuggable: items the Doctor was told to ADD but are STILL missing ("unfixed"
+    # — the Doctor ignored/paraphrased them) vs items newly missing that weren't on
+    # the original gap list ("newly-missing" — the Doctor introduced the gap).
+    if not dc2["passed"]:
+        before_missing = set(check2.get("missing_concepts", []) + check2.get("missing_skills", []))
+        after_missing  = set(dc2.get("missing_concepts", [])    + dc2.get("missing_skills", []))
+        unfixed        = sorted(after_missing & before_missing)
+        newly_missing  = sorted(after_missing - before_missing)
+        if unfixed:
+            print(f"[orchestrator] Doctor still-UNFIXED ({len(unfixed)} item(s) it was "
+                  f"told to add but didn't): {', '.join(unfixed)}")
+        if newly_missing:
+            print(f"[orchestrator] Doctor NEWLY-MISSING ({len(newly_missing)} item(s) not on "
+                  f"the original gap list): {', '.join(newly_missing)}")
+
     emit("agent_completed", {
         "agent":  "Eval (doctored)",
         "output": {
@@ -299,6 +402,152 @@ def _doctor_and_record(
         },
     })
     print(f"[orchestrator] Doctored CSV re-verify — "
+          f"check1 {'✓' if dc1['passed'] else '✗'}, check2 {'✓' if dc2['passed'] else '✗'}"
+          f"{' (REGRESSED)' if regressed else ''}")
+
+    # ── Doctor chain: coverage fixed but rules broke → Rules Doctor ─────────────
+    # The coverage Doctor closed the Check-2 gap but introduced a Check-1 (rules)
+    # violation — a CSV one rule-fix away from passing. Hand it to the Rules Doctor,
+    # which fixes rules WHILE preserving coverage (its own regression guard protects
+    # the coverage just gained). One bounded extra pass — no loop. Only chain when the
+    # coverage gain is real (not regressed); a regressed CSV is not worth rescuing.
+    if dc2["passed"] and not dc1["passed"] and not regressed:
+        print("[orchestrator] Coverage Doctor fixed Check 2 but broke Check 1 — "
+              "chaining Rules Doctor to repair rules while preserving coverage")
+        chained = _rules_doctor_and_record(
+            emit,
+            csv=doctored_csv, check1=dc1, check2=dc2, csm_data=csm_data,
+            universal_rules=universal_rules,
+            board=board, subject=subject, grade=grade, chapter=chapter,
+            attempt=attempt,
+        )
+        if chained.get("csv") is not None:
+            # The chained result (rules-repaired) supersedes the coverage-only output.
+            return chained
+
+    return {
+        "csv":                doctored_csv,
+        "passed":             doc_eval["passed"],
+        "rows":               doc["rows"],
+        "regressed":          regressed,
+        "regressed_concepts": regressions["concepts"],
+        "regressed_skills":   regressions["skills"],
+    }
+
+
+def _rules_doctor_and_record(
+    emit,
+    *,
+    csv: str,
+    check1: dict,
+    check2: dict,
+    csm_data: dict,
+    universal_rules: str,
+    board: str,
+    subject: str,
+    grade: str,
+    chapter: str,
+    attempt: int,
+) -> dict:
+    """
+    Doctor a Check-1-only failing CSV and re-verify it through both checks.
+
+    Mirror of _doctor_and_record for the opposite case: the generated CSV already passed
+    Check 2 (coverage), so rather than regenerate, we surgically fix the universal-rule
+    violations and re-evaluate. The regression guard here protects the coverage the CSV
+    came in with — a rule-fix must not break a matched concept/skill.
+
+    Returns:
+        {"csv": str|None, "passed": bool} — csv is None if doctoring produced an
+        invalid CSV or errored. Never raises.
+    """
+    emit("agent_started", {
+        "agent":   "Doctor (rules)",
+        "attempt": attempt,
+        "input": {
+            "violations":  check1.get("feedback", []),
+            "csv_preview": csv,
+        },
+    })
+
+    try:
+        doc = run_rules_doctor(
+            failing_csv=csv,
+            check1=check1,
+            universal_rules=universal_rules,
+            concept_skill_map=csm_data,
+            check2=check2,
+            board=board, subject=subject, grade=grade, chapter=chapter,
+        )
+    except Exception as e:
+        print(f"[orchestrator] Rules doctoring errored — {e}")
+        emit("agent_completed", {"agent": "Doctor (rules)", "output": {"error": str(e)}})
+        return {"csv": None, "passed": False}
+
+    if doc.get("csv") is None:
+        emit("agent_completed", {
+            "agent":  "Doctor (rules)",
+            "output": {"error": doc.get("error", "invalid CSV after retry")},
+        })
+        return {"csv": None, "passed": False}
+
+    doctored_csv = doc["csv"]
+    emit("agent_completed", {
+        "agent":  "Doctor (rules)",
+        "output": {"rows": len(doc["rows"]), "csv_preview": doctored_csv},
+    })
+
+    # ── Re-verify the doctored CSV through both checks ─────────────────────────
+    # Reuse the "Eval (doctored)" agent name (already rendered by the dashboard); the
+    # two doctors are mutually exclusive within an attempt so the name never collides.
+    emit("agent_started", {
+        "agent":   "Eval (doctored)",
+        "attempt": attempt,
+        "input": {
+            "rows":              len(doc["rows"]),
+            "csv_preview":       doctored_csv,
+            "concept_skill_map": csm_data,
+        },
+    })
+    doc_eval = run_eval(doctored_csv, board, subject, grade, chapter)
+    dc1, dc2 = doc_eval["check1"], doc_eval["check2"]
+
+    # ── Regression guard ───────────────────────────────────────────────────────
+    # The CSV came in passing Check 2. Did the rule-fix break any coverage it already
+    # had? Compare the incoming Check 2 (matched) against the re-evaluated Check 2
+    # (missing). Any matched → missing flip means the rephrase lost a cover.
+    regressions = _coverage_regressions(check2, dc2)
+    regressed   = bool(regressions["concepts"] or regressions["skills"])
+    if regressed:
+        print(f"[orchestrator] ⚠ Rules Doctor REGRESSED coverage — "
+              f"{len(regressions['concepts'])} concept(s), {len(regressions['skills'])} skill(s) "
+              f"were matched before doctoring but are now missing: "
+              f"{', '.join(regressions['concepts'] + regressions['skills'])}")
+
+    emit("agent_completed", {
+        "agent":  "Eval (doctored)",
+        "output": {
+            "check1": {
+                "passed":   dc1["passed"],
+                "feedback": dc1["feedback"],
+            },
+            "check2": {
+                "passed":             dc2["passed"],
+                "feedback":           dc2.get("feedback",         []),
+                "missing_concepts":   dc2.get("missing_concepts", []),
+                "missing_skills":     dc2.get("missing_skills",   []),
+                "matched_concepts":   dc2.get("matched_concepts", {}),
+                "matched_skills":     dc2.get("matched_skills",   {}),
+                "extra_concepts":     dc2.get("extra_concepts",   []),
+                "extra_skills":       dc2.get("extra_skills",     []),
+                "reconciliation":     dc2.get("reconciliation",   {"concepts": {}, "skills": {}}),
+                "regressed":          regressed,
+                "regressed_concepts": regressions["concepts"],
+                "regressed_skills":   regressions["skills"],
+            },
+        },
+    })
+    print(f"[orchestrator] Rules-doctored CSV re-verify — "
           f"check1 {'✓' if dc1['passed'] else '✗'}, check2 {'✓' if dc2['passed'] else '✗'}"
           f"{' (REGRESSED)' if regressed else ''}")
 
@@ -367,6 +616,31 @@ def run_pipeline(
     passing_candidates    = []    # every CSV that passed BOTH checks (generated + doctored)
     doctored_artifacts    = []    # [{attempt, csv, passed}] — persisted on escalation
 
+    def _escalate_generation_failure(err: Exception) -> dict:
+        """Escalate (rather than crash) when generation can't yield a valid CSV.
+
+        Records progress in the KB and emits a terminal escalation so the dashboard —
+        and any queued batch — advances. Called from both generation call sites.
+        """
+        print(f"[orchestrator] Generation failed on attempt {attempt} — escalating: {err}")
+        emit("agent_completed", {"agent": "Generator", "output": {"error": str(err)}})
+        folder = write_escalation(
+            board=board, subject=subject, grade=grade, chapter=chapter,
+            date=date.today().isoformat(),
+            failed_check="generation",
+            attempts=attempt,
+            last_csv=current_csv or "",
+            attempt_history=attempt_history,
+            doctored_artifacts=doctored_artifacts,
+        )
+        emit("pipeline_escalated", {
+            "attempt":       attempt,
+            "failed_check":  "generation",
+            "folder":        folder,
+            "last_feedback": {"generation_error": str(err)},
+        })
+        return {"passed": False, "csv": current_csv, "attempts": attempt}
+
     while attempt < MAX_ATTEMPTS:
         attempt += 1
         print(f"\n── Attempt {attempt}/{MAX_ATTEMPTS} ──────────────────────────────────────")
@@ -392,7 +666,10 @@ def run_pipeline(
                 future_map = executor.submit(run_map_extraction, board, subject, grade, chapter)
                 future_gen = executor.submit(run_generator,      board, subject, grade, chapter)
                 map_result = future_map.result()
-                gen_result = future_gen.result()
+                try:
+                    gen_result = future_gen.result()
+                except (ValueError, FileNotFoundError) as e:
+                    return _escalate_generation_failure(e)
 
             map_exists = True
             emit("agent_completed", {
@@ -418,7 +695,12 @@ def run_pipeline(
         })
 
         if gen_result is None:
-            gen_result = run_generator(board, subject, grade, chapter, forced_level=forced_level)
+            # Generation may fail even after the generator's own retries (e.g. the
+            # model kept returning prose). Escalate gracefully instead of crashing.
+            try:
+                gen_result = run_generator(board, subject, grade, chapter, forced_level=forced_level)
+            except (ValueError, FileNotFoundError) as e:
+                return _escalate_generation_failure(e)
 
         forced_level       = None  # consumed — each forcing applies to exactly one regeneration
         current_csv        = gen_result["csv"]
@@ -536,6 +818,49 @@ def run_pipeline(
                           f"passed both checks — added as candidate")
             else:
                 print("[orchestrator] No concept-skill-map available — skipping CSV doctoring")
+
+        # ── Check-1-only failure → rules-doctor the CSV ─────────────────────────
+        # Mirror of the Check-2-only path: the generated CSV already covers the CSM, so
+        # rather than regenerate, surgically fix the universal-rule violations and re-verify.
+        # Produces a fallback candidate only — the prompt revision below (Branch A) is
+        # unchanged. Runs even on the LAST attempt so a final failing generation still
+        # yields a candidate.
+        check1_only = c2["passed"] and not c1["passed"]
+        if check1_only:
+            try:
+                universal_rules = load_rules(board, subject, grade)
+            except Exception:
+                universal_rules = ""
+
+            csm_for_doctor = csm_data
+            if csm_for_doctor is None:
+                try:
+                    csm_for_doctor = load_concept_skill_map(board, subject, grade, chapter)
+                except Exception:
+                    csm_for_doctor = None  # rules doctor can still run without the map
+
+            rules_doctored = _rules_doctor_and_record(
+                emit,
+                csv=current_csv, check1=c1, check2=c2, csm_data=csm_for_doctor,
+                universal_rules=universal_rules,
+                board=board, subject=subject, grade=grade, chapter=chapter,
+                attempt=attempt,
+            )
+            doctored_artifacts.append({
+                "attempt":   attempt,
+                "kind":      "rules",
+                "csv":       rules_doctored["csv"],
+                "passed":    rules_doctored["passed"],
+                "regressed": rules_doctored.get("regressed", False),
+            })
+            if rules_doctored["passed"]:
+                passing_candidates.append(
+                    _candidate("rules_doctored", attempt,
+                               rules_doctored["csv"],
+                               rules_doctored.get("rows", []))
+                )
+                print(f"[orchestrator] Rules-doctored CSV from attempt {attempt} "
+                      f"passed both checks — added as candidate")
 
         if attempt == MAX_ATTEMPTS:
             break
@@ -809,23 +1134,37 @@ def handle_re_extract(board, subject, grade, chapter, map_guidance, emit=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Q-Matrix Curriculum CSV Pipeline")
-    parser.add_argument("--board",          required=True)
-    parser.add_argument("--subject",        required=True)
-    parser.add_argument("--grade",          required=True)
-    parser.add_argument("--chapter",        required=True)
+    parser.add_argument("--board",          default=None)
+    parser.add_argument("--subject",        default=None)
+    parser.add_argument("--grade",          default=None)
+    parser.add_argument("--chapter",        default=None)
     parser.add_argument("--human-feedback", default=None)
     parser.add_argument("--reject",         action="store_true")
     parser.add_argument("--reason",         default=None)
     parser.add_argument("--re-extract",     action="store_true")
     parser.add_argument("--map-guidance",   default=None)
+    parser.add_argument("--prereq-csv",     default=None,
+                        help="Path to a curriculum CSV; skips Stage 1 and runs only "
+                             "prerequisite mapping (identifiers derived from the CSV).")
     parser.add_argument("--no-sync",        action="store_true")
 
     args = parser.parse_args()
 
+    # The prereq-only path derives identifiers from the CSV; every other path needs them.
+    if not args.prereq_csv:
+        missing = [f"--{n}" for n in ("board", "subject", "grade", "chapter")
+                   if not getattr(args, n)]
+        if missing:
+            parser.error(f"the following arguments are required: {', '.join(missing)}")
     if args.reject and not args.reason:
         parser.error("--reject requires --reason")
     if args.re_extract and not args.map_guidance:
         parser.error("--re-extract requires --map-guidance")
+
+    if args.prereq_csv:
+        with open(args.prereq_csv, "r", encoding="utf-8") as f:
+            result = run_prerequisite_only(f.read())
+        sys.exit(0 if result["passed"] else 1)
 
     if not args.no_sync:
         try:

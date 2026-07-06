@@ -1,16 +1,19 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, Copy, Download } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import type { AgentRecord, Reconciliation, ReconciliationEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { copyCsv, downloadCsv } from "@/lib/csv-actions";
+import { parseCSVLine } from "@/lib/csv-utils";
 
 const AGENT_ICONS: Record<string, string> = {
   Generator: "⚙",
   Eval: "📋",
   Revision: "🔁",
   Doctor: "🩺",
+  "Doctor (rules)": "🩹",
   "Eval (doctored)": "📋",
   Judge: "⚖",
   "Map Extraction": "🗂",
@@ -23,6 +26,7 @@ const AGENT_COLORS: Record<string, string> = {
   Eval: "var(--qm-amber)",
   Revision: "var(--qm-purple)",
   Doctor: "var(--qm-green)",
+  "Doctor (rules)": "var(--qm-green)",
   "Eval (doctored)": "var(--qm-amber)",
   Judge: "var(--qm-purple)",
   "Map Extraction": "var(--qm-blue)",
@@ -60,29 +64,6 @@ function needsExpand(data: Record<string, unknown>): boolean {
     if (typeof v === "string" && v.length > 80) return true;
     return false;
   });
-}
-
-// maxCols caps the number of columns: once the first (maxCols-1) are filled, any
-// further unquoted commas stay in the last field. This recovers malformed rows
-// where the trailing column (e.g. a skill) contains unquoted commas.
-function parseCSVLine(line: string, maxCols?: number): string[] {
-  const result: string[] = [];
-  let current = "";
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
-      else inQuotes = !inQuotes;
-    } else if (ch === "," && !inQuotes && (maxCols === undefined || result.length < maxCols - 1)) {
-      result.push(current.trim());
-      current = "";
-    } else {
-      current += ch;
-    }
-  }
-  result.push(current.trim());
-  return result;
 }
 
 function parseCsvSets(csvText: string): { concepts: Set<string>; skills: Set<string> } {
@@ -231,6 +212,11 @@ function CsvInlineEntry({ csvText }: { csvText: string }) {
   const dataRows = lines.slice(1).map((l) => parseCSVLine(l, headers.length));
   const rowCount = dataRows.length;
 
+  // Name the download after the chapter column when present, else a generic name.
+  const chapterIdx = headers.indexOf("chapter");
+  const chapterName = chapterIdx >= 0 ? dataRows[0]?.[chapterIdx] : undefined;
+  const filename = `${chapterName?.trim() || "curriculum"}.csv`;
+
   return (
     <div className="flex flex-col gap-1">
       <div className="text-[11px] leading-relaxed">
@@ -238,16 +224,32 @@ function CsvInlineEntry({ csvText }: { csvText: string }) {
         <span className="text-[var(--qm-green)]">{rowCount} row{rowCount !== 1 ? "s" : ""}</span>
       </div>
 
-      <button
-        onClick={() => setOpen((p) => !p)}
-        className="flex items-center gap-0.5 text-[10px] text-primary/70 hover:text-primary transition-colors w-fit"
-      >
-        {open ? (
-          <><ChevronUp className="h-3 w-3" /> Collapse preview</>
-        ) : (
-          <><ChevronDown className="h-3 w-3" /> Expand preview</>
-        )}
-      </button>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => setOpen((p) => !p)}
+          className="flex items-center gap-0.5 text-[10px] text-primary/70 hover:text-primary transition-colors w-fit"
+        >
+          {open ? (
+            <><ChevronUp className="h-3 w-3" /> Collapse preview</>
+          ) : (
+            <><ChevronDown className="h-3 w-3" /> Expand preview</>
+          )}
+        </button>
+        <button
+          onClick={() => copyCsv(csvText)}
+          title="Copy CSV to clipboard"
+          className="flex items-center gap-0.5 text-[10px] text-primary/70 hover:text-primary transition-colors w-fit"
+        >
+          <Copy className="h-3 w-3" /> Copy
+        </button>
+        <button
+          onClick={() => downloadCsv(csvText, filename)}
+          title="Download CSV"
+          className="flex items-center gap-0.5 text-[10px] text-primary/70 hover:text-primary transition-colors w-fit"
+        >
+          <Download className="h-3 w-3" /> Download
+        </button>
+      </div>
 
       {open && (
         <div className="thin-scroll mt-1 max-h-52 overflow-auto rounded border border-border">

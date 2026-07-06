@@ -7,12 +7,14 @@ This is the only file in the codebase that knows the KB folder structure.
 """
 
 import os
+import re
 import json
 from dotenv import load_dotenv
 from skills.file_io import (
     read_file, write_file, append_file,
     file_exists, create_directory
 )
+from skills.csv_utils import parse_csv
 
 load_dotenv()
 KB_ROOT = os.getenv("KB_ROOT")
@@ -454,12 +456,13 @@ Missing skills:   {missing_skills}
         lines = []
         for doc in doctored_artifacts:
             n      = doc.get("attempt")
+            kind   = "rules (Check-1)" if doc.get("kind") == "rules" else "coverage (Check-2)"
             status = "✓ passed re-verification" if doc.get("passed") else "✗ failed re-verification"
             has_csv = bool(doc.get("csv"))
             file_note = f"see `doctored_attempt_{n}.csv`" if has_csv else "schema-invalid — not written"
-            lines.append(f"- Attempt {n}: {status} ({file_note})")
+            lines.append(f"- Attempt {n} [{kind}]: {status} ({file_note})")
         doctored_section = (
-            "## Doctored CSVs (Check-2-only repairs)\n\n"
+            "## Doctored CSVs (surgical repairs)\n\n"
             "These are surgical patches of the failing CSV produced by the revision agent. "
             "None passed both checks (otherwise the pipeline would have returned one instead "
             "of escalating). They are kept for diagnostic review.\n\n"
@@ -556,3 +559,251 @@ def save_extraction_guidance(
     """
     path = _extraction_guidance_path(board, subject, grade, chapter)
     write_file(path, guidance)
+
+
+# ─── Analytics / Enumeration ─────────────────────────────────────────────────
+#
+# Read-only helpers that walk the KB filesystem to report what has been run
+# through the pipeline. There is no manifest in the KB — status is inferred from
+# file presence:
+#   - confirmed_curriculum.csv present  → chapter succeeded (confirmed CSV)
+#   - an escalations/{...}/report.md    → chapter failed all cycles (escalated)
+#   - concept-skill-map.json only       → reached extraction, no final outcome
+# These keep KB-structure knowledge centralized in this module (see api.py).
+
+def _list_child_dirs(path: str) -> list[str]:
+    """Return sorted child directory names of `path`, or [] if it isn't a dir."""
+    try:
+        return sorted(
+            name for name in os.listdir(path)
+            if os.path.isdir(os.path.join(path, name))
+        )
+    except (FileNotFoundError, NotADirectoryError, PermissionError):
+        return []
+
+
+def list_textbook_chapters() -> list[dict]:
+    """
+    Enumerate every chapter directory under
+    KB_ROOT/textbooks/{board}/{subject}/{grade}/{chapter}.
+
+    Returns:
+        One dict per chapter directory:
+            {
+                "board", "subject", "grade", "chapter": str,
+                "has_csm":       bool,  # concept-skill-map.json present
+                "has_confirmed": bool,  # confirmed_curriculum.csv present
+            }
+    """
+    root = os.path.join(KB_ROOT, "textbooks")
+    records: list[dict] = []
+    for board in _list_child_dirs(root):
+        for subject in _list_child_dirs(os.path.join(root, board)):
+            for grade in _list_child_dirs(os.path.join(root, board, subject)):
+                grade_path = os.path.join(root, board, subject, grade)
+                for chapter in _list_child_dirs(grade_path):
+                    records.append({
+                        "board": board,
+                        "subject": subject,
+                        "grade": grade,
+                        "chapter": chapter,
+                        "has_csm": concept_skill_map_exists(board, subject, grade, chapter),
+                        "has_confirmed": confirmed_csv_exists(board, subject, grade, chapter),
+                    })
+    return records
+
+
+def _report_field(text: str, name: str) -> str:
+    """Extract a `**Name:** value` header field from a report.md, or ''."""
+    m = re.search(rf"^\*\*{re.escape(name)}:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
+def _parse_report_header(text: str) -> dict:
+    """
+    Parse the header block of an escalation report.md into identifiers + outcome.
+    The header carries the ORIGINAL (un-normalized) grade/chapter values, so these
+    match the textbooks/ folder names directly — no ambiguous underscore splitting.
+    """
+    attempts_raw = _report_field(text, "Total Attempts")
+    try:
+        total_attempts = int(attempts_raw)
+    except (TypeError, ValueError):
+        total_attempts = None
+    return {
+        "board": _report_field(text, "Board"),
+        "subject": _report_field(text, "Subject"),
+        "grade": _report_field(text, "Grade"),
+        "chapter": _report_field(text, "Chapter"),
+        "date": _report_field(text, "Date"),
+        "failed_check": _report_field(text, "Failed Check"),
+        "total_attempts": total_attempts,
+    }
+
+
+def _parse_report_attempts(text: str) -> list[dict]:
+    """
+    Parse the "## Attempt History" section of a report.md into structured
+    per-attempt records. Best-effort: the raw report is always available as a
+    fallback (see load_escalation_report), so a parsing miss here is non-fatal.
+    """
+    # Isolate the attempt-history section (ends at the next top-level "## " header).
+    hist_m = re.search(
+        r"## Attempt History\s*(.*?)(?:\n## |\Z)", text, re.DOTALL
+    )
+    if not hist_m:
+        return []
+    history = hist_m.group(1)
+
+    attempts: list[dict] = []
+    # Each attempt block starts with "### Attempt N (input_type: ...)".
+    blocks = re.split(r"^### Attempt\s+", history, flags=re.MULTILINE)
+    for block in blocks[1:]:
+        head = re.match(r"(\d+)\s*(?:\(input_type:\s*([^)]*)\))?", block)
+        number = int(head.group(1)) if head else None
+        input_type = (head.group(2).strip() if head and head.group(2) else "")
+
+        def _status_passed(check_label: str) -> bool | None:
+            m = re.search(rf"\*\*{re.escape(check_label)}:\*\*\s*(.+)", block)
+            if not m:
+                return None
+            return "PASSED" in m.group(1)
+
+        def _bullets_after(check_label: str) -> list[str]:
+            # Feedback bullets are "  - ..." lines that follow the check status line
+            # up to the next blank line or the next bold "**" marker.
+            m = re.search(
+                rf"\*\*{re.escape(check_label)}:\*\*[^\n]*\n(.*?)(?:\n\s*\n|\n\*\*|\Z)",
+                block, re.DOTALL,
+            )
+            if not m:
+                return []
+            bullets = re.findall(r"^\s*-\s+(.*\S)\s*$", m.group(1), re.MULTILINE)
+            return [b for b in bullets if b.strip().lower() != "none"]
+
+        def _csv_list(field_name: str) -> list[str]:
+            m = re.search(rf"{re.escape(field_name)}:\s*(.+)", block)
+            if not m:
+                return []
+            raw = m.group(1).strip()
+            if raw.lower() == "none" or not raw:
+                return []
+            return [p.strip() for p in raw.split(",") if p.strip()]
+
+        attempts.append({
+            "attempt": number,
+            "input_type": input_type,
+            "check1_passed": _status_passed("Check 1 — Universal Rules"),
+            "check1_feedback": _bullets_after("Check 1 — Universal Rules"),
+            "check2_passed": _status_passed("Check 2 — CSM Coverage"),
+            "check2_feedback": _bullets_after("Check 2 — CSM Coverage"),
+            "missing_concepts": _csv_list("Missing concepts"),
+            "missing_skills": _csv_list("Missing skills"),
+        })
+    return attempts
+
+
+def list_escalations() -> list[dict]:
+    """
+    Enumerate populated escalation folders under KB_ROOT/escalations/.
+
+    Only folders containing a report.md are returned (empty escalation folders,
+    of which there are several in the KB, are ignored). Identifiers come from the
+    parsed report header, which preserves the original grade/chapter spelling.
+
+    Returns:
+        One dict per escalation:
+            {
+                "board", "subject", "grade", "chapter", "date": str,
+                "failed_check": str,          # "check1" | "check2" | "both" | ""
+                "total_attempts": int | None,
+                "folder": str,                # folder name (not full path)
+            }
+    """
+    root = os.path.join(KB_ROOT, "escalations")
+    escalations: list[dict] = []
+    for folder in _list_child_dirs(root):
+        report_path = os.path.join(root, folder, "report.md")
+        if not file_exists(report_path):
+            continue
+        header = _parse_report_header(read_file(report_path))
+        header["folder"] = folder
+        escalations.append(header)
+    return escalations
+
+
+def load_escalation_report(folder: str) -> dict:
+    """
+    Load and parse a single escalation folder's report.md plus its sibling files.
+
+    Args:
+        folder: The escalation folder NAME (as returned by list_escalations),
+                not a full path.
+
+    Returns:
+        {
+            "folder":   str,
+            "header":   dict,          # see _parse_report_header
+            "attempts": list[dict],    # see _parse_report_attempts
+            "files":    list[str],     # sibling filenames (prompts, CSVs)
+            "raw_report": str,         # full report.md markdown (complete fallback)
+        }
+
+    Raises:
+        FileNotFoundError: If the folder or its report.md does not exist.
+    """
+    folder_path = os.path.join(KB_ROOT, "escalations", folder)
+    report_path = os.path.join(folder_path, "report.md")
+    if not file_exists(report_path):
+        raise FileNotFoundError(f"Escalation report not found: {report_path}")
+
+    text = read_file(report_path)
+    try:
+        files = sorted(
+            name for name in os.listdir(folder_path)
+            if os.path.isfile(os.path.join(folder_path, name)) and name != "report.md"
+        )
+    except (FileNotFoundError, PermissionError):
+        files = []
+
+    return {
+        "folder": folder,
+        "header": _parse_report_header(text),
+        "attempts": _parse_report_attempts(text),
+        "files": files,
+        "raw_report": text,
+    }
+
+
+def confirmed_csv_has_prereqs(board: str, subject: str, grade: str, chapter: str) -> bool:
+    """
+    Return True if a chapter's confirmed CSV has any non-empty Level-1 prerequisite
+    cell. The prerequisite phase is defensive — it still writes the confirmed CSV
+    with EMPTY L1 columns if mapping failed — so "confirmed CSV exists" is not the
+    same as "prerequisites were actually mapped". This distinguishes the two.
+
+    Returns:
+        True if any prereq_*_L1_same_chapter cell holds a non-empty JSON array;
+        False if the CSV is missing, unparseable, or all L1 cells are empty.
+    """
+    from agents.prerequisite import L1_COLUMNS
+
+    if not confirmed_csv_exists(board, subject, grade, chapter):
+        return False
+    try:
+        rows = parse_csv(load_confirmed_csv(board, subject, grade, chapter))
+    except (ValueError, FileNotFoundError):
+        return False
+
+    for row in rows:
+        for col in L1_COLUMNS:
+            raw = (row.get(col) or "").strip()
+            if not raw or raw == "[]":
+                continue
+            try:
+                if json.loads(raw):  # non-empty list/dict
+                    return True
+            except (json.JSONDecodeError, TypeError):
+                # Non-JSON but non-empty text still counts as "has prereqs".
+                return True
+    return False

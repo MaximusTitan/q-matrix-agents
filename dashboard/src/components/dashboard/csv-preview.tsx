@@ -5,40 +5,15 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { copyCsv, downloadCsv } from "@/lib/csv-actions";
+import { parseCSVLine } from "@/lib/csv-utils";
 
 interface CsvPreviewProps {
   csv: string;
   chapter: string;
   selectedBy?: "single" | "judge";
-  source?: "generated" | "doctored";
+  source?: "generated" | "doctored" | "user_provided";
   candidateCount?: number;
-}
-
-// maxCols caps the number of columns: once the first (maxCols-1) are filled, any
-// further unquoted commas stay in the last field. This recovers malformed rows
-// where the trailing column (e.g. a skill) contains unquoted commas.
-function parseCSVLine(line: string, maxCols?: number): string[] {
-  const result: string[] = [];
-  let current = "";
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (ch === "," && !inQuotes && (maxCols === undefined || result.length < maxCols - 1)) {
-      result.push(current.trim());
-      current = "";
-    } else {
-      current += ch;
-    }
-  }
-  result.push(current.trim());
-  return result;
 }
 
 const PREVIEW_ROWS = 10;
@@ -76,17 +51,8 @@ export function CsvPreview({ csv, chapter, selectedBy, source, candidateCount }:
   const visibleRows = expanded ? dataRows : dataRows.slice(0, PREVIEW_ROWS);
   const hasMore = dataRows.length > PREVIEW_ROWS;
 
-  const copyCSV = () => {
-    navigator.clipboard.writeText(csv);
-  };
-
-  const downloadCSV = () => {
-    const blob = new Blob([csv], { type: "text/csv" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${chapter || "curriculum"}.csv`;
-    a.click();
-  };
+  const copyCSV = () => copyCsv(csv);
+  const downloadCSV = () => downloadCsv(csv, `${chapter || "curriculum"}.csv`);
 
   return (
     <div className="mb-6 rounded-md border border-border bg-card p-4">

@@ -1,4 +1,9 @@
-import type { RunFormValues, RunMetadata } from "./types";
+import type {
+  AnalyticsResponse,
+  ChapterAnalytics,
+  RunFormValues,
+  RunMetadata,
+} from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -34,6 +39,12 @@ export async function postReExtract(
   values: RunFormValues & { map_guidance: string; no_sync?: boolean }
 ): Promise<{ run_id: string }> {
   return post("/re-extract", { ...values, no_sync: true });
+}
+
+export async function postRunPrerequisiteOnly(
+  values: { csv_text: string; no_sync?: boolean }
+): Promise<{ run_id: string }> {
+  return post("/run-prerequisite-only", { ...values, no_sync: true });
 }
 
 export async function fetchRuns(): Promise<RunMetadata[]> {
@@ -73,4 +84,26 @@ export async function fetchKbChapters(board: string, subject: string, grade: str
   if (!res.ok) return [];
   const data = (await res.json()) as { chapters: string[] };
   return data.chapters;
+}
+
+export async function fetchAnalytics(): Promise<AnalyticsResponse> {
+  const res = await fetch(`${API_BASE}/kb/analytics`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch analytics: ${res.status}`);
+  }
+  return res.json() as Promise<AnalyticsResponse>;
+}
+
+export async function fetchChapterAnalytics(
+  board: string,
+  subject: string,
+  grade: string,
+  chapter: string
+): Promise<ChapterAnalytics> {
+  const params = new URLSearchParams({ board, subject, grade, chapter });
+  const res = await fetch(`${API_BASE}/kb/analytics/chapter?${params}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch chapter analytics: ${res.status}`);
+  }
+  return res.json() as Promise<ChapterAnalytics>;
 }
