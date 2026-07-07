@@ -21,14 +21,14 @@ Input:  failing_csv, check1, universal_rules, concept_skill_map, check2,
 Output: {"csv": str, "rows": list} on success, or {"csv": None, "error": str} on failure
 
 Skills used:
-    llm        — call_llm
-    csv_utils  — validate_csv_schema
+    llm        — call_llm_structured
+    csv_utils  — CONCEPT_SKILL_ROWS_TOOL, rows_from_pairs, validate_rows, csv_to_text
 """
 
 import json
 import os
-from skills.llm import call_llm
-from skills.csv_utils import validate_csv_schema
+from skills.llm import call_llm_structured
+from skills.csv_utils import CONCEPT_SKILL_ROWS_TOOL, rows_from_pairs, validate_rows, csv_to_text
 
 _PROMPT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -89,7 +89,8 @@ def run(
 
     Returns:
         On success: {"csv": corrected_csv, "rows": [parsed rows]}
-        On failure (LLM produced an unparseable/invalid CSV twice):
+        On failure (the LLM submitted invalid rows twice — e.g. an empty rows list or an
+        empty concept/skill):
             {"csv": None, "error": <message>}
     """
     print(f"[rules_doctor] Doctoring CSV — {board}/{subject}/{grade}/{chapter}")
@@ -121,31 +122,34 @@ skills:
 --- MATCHED ITEMS (rows carrying coverage — preserve their meaning) ---
 {_format_matched(check2)}"""
 
+    correction = ""
     last_error = None
     for attempt in range(2):
-        user_content = base_user_content
-        if last_error is not None:
-            user_content += (
-                f"\n\n--- YOUR PREVIOUS OUTPUT WAS INVALID ---\n{last_error}\n"
-                "Return a corrected, schema-valid CSV. Raw CSV only — no fences, no prose."
-            )
+        print(f"[rules_doctor] Calling LLM (attempt {attempt + 1}/2)...")
+        result = call_llm_structured(
+            SYSTEM_PROMPT, base_user_content + correction, CONCEPT_SKILL_ROWS_TOOL
+        )
+        rows = rows_from_pairs(board, subject, grade, chapter, result.get("rows", []))
 
-        raw = call_llm(SYSTEM_PROMPT, user_content)
         try:
-            rows = validate_csv_schema(raw)  # also strips markdown fences
+            validate_rows(rows)
         except ValueError as e:
             last_error = str(e)
-            print(f"[rules_doctor] Doctored CSV invalid (attempt {attempt + 1}/2): {e}")
+            print(f"[rules_doctor] Doctored rows invalid (attempt {attempt + 1}/2): {e}")
+            # Echo the rejected rows back so the model can see and fix the exact
+            # offending one, instead of resubmitting the whole set blind.
+            correction = (
+                "\n\n--- IMPORTANT ---\n"
+                f"Your previous submission was rejected: {last_error}\n\n"
+                "--- YOUR PREVIOUS ROWS ---\n"
+                f"{json.dumps(result.get('rows', []), indent=2, ensure_ascii=False)}\n"
+                "--- END PREVIOUS ROWS ---\n\n"
+                "Call the tool again with the corrected, COMPLETE list of rows."
+            )
             continue
 
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = "\n".join(
-                l for l in cleaned.splitlines() if not l.strip().startswith("```")
-            ).strip()
-
         print(f"[rules_doctor] Doctored CSV produced ({len(rows)} rows)")
-        return {"csv": cleaned, "rows": rows}
+        return {"csv": csv_to_text(rows), "rows": rows}
 
-    print("[rules_doctor] Doctoring failed — CSV invalid after retry")
+    print("[rules_doctor] Doctoring failed — rows invalid after retry")
     return {"csv": None, "error": last_error}

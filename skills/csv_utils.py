@@ -12,6 +12,46 @@ import json
 REQUIRED_COLUMNS = {"board", "subject", "grade", "chapter", "concept", "skill"}
 BASE_COLUMNS = ["board", "subject", "grade", "chapter", "concept", "skill"]
 
+# Shared tool schema for agents that produce concept-skill rows via a forced tool call
+# instead of hand-authoring raw CSV text. Keeping the model to {concept, skill} pairs —
+# with the four identifier columns injected in code via rows_from_pairs — means it never
+# has to escape a delimiter itself, which is what caused the recurring "more fields than
+# headers" CSV validation failures.
+CONCEPT_SKILL_ROWS_TOOL = {
+    "name": "submit_concept_skill_rows",
+    "description": (
+        "Submit the final list of concept-skill rows for this chapter's curriculum CSV. "
+        "Do not include board/subject/grade/chapter — those are fixed identifier columns "
+        "applied automatically after you submit."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "rows": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "concept": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "The concept name.",
+                        },
+                        "skill": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "One observable, verb-led skill tied to this concept.",
+                        },
+                    },
+                    "required": ["concept", "skill"],
+                },
+            },
+        },
+        "required": ["rows"],
+    },
+}
+
 
 def parse_csv(raw_text: str) -> list[dict]:
     """
@@ -104,6 +144,57 @@ def validate_csv_schema(raw_text: str) -> list[dict]:
         )
 
     return rows
+
+
+def rows_from_pairs(board: str, subject: str, grade: str, chapter: str, pairs: list[dict]) -> list[dict]:
+    """
+    Build full 6-column row dicts from LLM-produced {concept, skill} pairs plus the
+    fixed identifier constants. Used with CONCEPT_SKILL_ROWS_TOOL: the LLM only ever
+    produces concept/skill text, never the identifier columns, so it can't corrupt them.
+
+    Args:
+        board, subject, grade, chapter: The four fixed identifier columns.
+        pairs: List of dicts with "concept" and "skill" keys (a tool call's "rows" input).
+
+    Returns:
+        List of row dicts with all 6 base columns. Does not validate — call validate_rows
+        on the result before trusting it.
+    """
+    return [
+        {
+            "board": board, "subject": subject, "grade": grade, "chapter": chapter,
+            "concept": (p.get("concept") or "").strip(),
+            "skill":   (p.get("skill")   or "").strip(),
+        }
+        for p in pairs
+    ]
+
+
+def validate_rows(rows: list[dict]) -> None:
+    """
+    Validate rows already in the standard schema shape (e.g. from rows_from_pairs),
+    as opposed to parsed CSV text. Only checks what a forced tool call can still get
+    wrong — an empty rows list, or an empty concept/skill despite the schema's
+    minLength hint (not mechanically enforced without strict tool use).
+
+    Raises:
+        ValueError: With a descriptive message if validation fails.
+    """
+    if not rows:
+        raise ValueError("No concept-skill rows were produced.")
+
+    errors = []
+    for i, row in enumerate(rows, start=2):  # start=2 to mirror validate_csv_schema (row 1 = header)
+        for col in ("concept", "skill"):
+            if not row[col]:
+                errors.append(f"Row {i}: '{col}' is empty.")
+
+    if errors:
+        raise ValueError(
+            f"CSV has {len(errors)} empty required field(s):\n" +
+            "\n".join(errors[:10]) +
+            ("\n... (truncated)" if len(errors) > 10 else "")
+        )
 
 
 def csv_to_text(rows: list[dict]) -> str:

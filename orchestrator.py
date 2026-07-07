@@ -624,12 +624,15 @@ def run_pipeline(
         """
         print(f"[orchestrator] Generation failed on attempt {attempt} — escalating: {err}")
         emit("agent_completed", {"agent": "Generator", "output": {"error": str(err)}})
+        # GenerationFailedError carries the last invalid CSV text; current_csv is never
+        # set on a generation-stage failure since generation didn't succeed this attempt.
+        failed_csv = getattr(err, "last_csv", "") or current_csv or ""
         folder = write_escalation(
             board=board, subject=subject, grade=grade, chapter=chapter,
             date=date.today().isoformat(),
             failed_check="generation",
             attempts=attempt,
-            last_csv=current_csv or "",
+            last_csv=failed_csv,
             attempt_history=attempt_history,
             doctored_artifacts=doctored_artifacts,
         )
