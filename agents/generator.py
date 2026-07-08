@@ -7,16 +7,22 @@ Produces a curriculum CSV from curriculum docs + prompt or rules.
 Input:  board, subject, grade, chapter, input_type ("grade_prompt" | "base_prompt" | "cold_start")
 Output: raw CSV string
 
+The model produces concept-skill rows via a forced tool call rather than hand-authoring
+raw CSV text — it never has to escape a delimiter itself, which is what caused the
+recurring "more fields than headers" validation failures when it forgot to quote a
+comma inside a concept/skill value.
+
 Skills used:
     kb_access  — load_curriculum_docs, load_prompt
-    llm        — call_llm
-    csv_utils  — validate_csv_schema
+    llm        — call_llm_structured
+    csv_utils  — CONCEPT_SKILL_ROWS_TOOL, rows_from_pairs, validate_rows, csv_to_text
 """
 
+import json
 import os
 from skills.kb_access import load_curriculum_docs, load_prompt, load_prompt_at_level
-from skills.llm import call_llm
-from skills.csv_utils import validate_csv_schema
+from skills.llm import call_llm_structured
+from skills.csv_utils import CONCEPT_SKILL_ROWS_TOOL, rows_from_pairs, validate_rows, csv_to_text
 
 # Load the generator system prompt
 _PROMPT_PATH = os.path.join(
@@ -27,10 +33,25 @@ _PROMPT_PATH = os.path.join(
 with open(_PROMPT_PATH, "r", encoding="utf-8") as f:
     SYSTEM_PROMPT = f.read()
 
-# The model occasionally emits prose/reasoning instead of a pure CSV. A corrective
-# re-prompt almost always fixes it, so generation is retried up to this many times
-# before giving up and raising.
+# The model occasionally submits rows with an empty concept/skill despite the tool
+# schema's minLength hint. A corrective re-prompt almost always fixes it, so generation
+# is retried up to this many times before giving up and raising.
 _MAX_GEN_ATTEMPTS = 3
+
+
+class GenerationFailedError(ValueError):
+    """
+    Raised when the generator exhausts all attempts without producing a valid CSV.
+
+    Carries the last invalid CSV text (if any) so the orchestrator can persist it to
+    the escalation folder — the summary message alone doesn't show what the model
+    actually produced, which otherwise makes malformed-CSV failures unreproducible
+    after the fact.
+    """
+
+    def __init__(self, message: str, last_csv: str = ""):
+        super().__init__(message)
+        self.last_csv = last_csv
 
 
 def run(board: str, subject: str, grade: str, chapter: str, forced_level: str = None) -> dict:
@@ -94,48 +115,49 @@ chapter: {chapter}
 --- CURRICULUM DOCUMENTATION ---
 {curriculum_docs}"""
 
-    # Steps 4–6 — Call the LLM, strip fences, validate. Retry with a corrective
-    # re-prompt when the model returns non-CSV output (prose, reasoning, etc.)
-    # so a single chatty response doesn't fail the whole pipeline run.
+    # Steps 4–6 — Call the LLM via a forced tool call, build the full rows, validate.
+    # Retry with a corrective re-prompt if the model submits an empty rows list or an
+    # empty concept/skill, so a single bad submission doesn't fail the whole run.
     correction = ""
     last_error: ValueError | None = None
+    last_rows: list[dict] = []
     for gen_attempt in range(1, _MAX_GEN_ATTEMPTS + 1):
         print(f"[generator] Calling LLM (attempt {gen_attempt}/{_MAX_GEN_ATTEMPTS})...")
-        raw_csv = call_llm(SYSTEM_PROMPT, user_content + correction)
+        result = call_llm_structured(
+            SYSTEM_PROMPT, user_content + correction, CONCEPT_SKILL_ROWS_TOOL
+        )
+        rows = rows_from_pairs(board, subject, grade, chapter, result.get("rows", []))
 
-        # Strip any markdown fences the LLM might add
-        cleaned = raw_csv.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.splitlines()
-            cleaned = "\n".join(
-                l for l in lines if not l.strip().startswith("```")
-            ).strip()
-
-        print(f"[generator] Validating CSV schema...")
+        print(f"[generator] Validating rows...")
         try:
-            rows = validate_csv_schema(cleaned)
+            validate_rows(rows)
         except ValueError as e:
             last_error = e
-            print(f"[generator] Invalid CSV on attempt {gen_attempt}/{_MAX_GEN_ATTEMPTS}: {e}")
+            last_rows = rows
+            print(f"[generator] Invalid rows on attempt {gen_attempt}/{_MAX_GEN_ATTEMPTS}: {e}")
+            # Echo the rejected rows back so the model can see and fix the exact
+            # offending one, instead of resubmitting the whole set blind.
             correction = (
                 "\n\n--- IMPORTANT ---\n"
-                f"Your previous response was rejected as invalid CSV: {e}\n"
-                "Respond with ONLY the CSV: a header row of exactly "
-                "board,subject,grade,chapter,concept,skill followed by data rows. "
-                "No prose, no explanation, no markdown fences. Wrap any field that "
-                "contains a comma in double quotes."
+                f"Your previous submission was rejected: {e}\n\n"
+                "--- YOUR PREVIOUS ROWS ---\n"
+                f"{json.dumps(result.get('rows', []), indent=2, ensure_ascii=False)}\n"
+                "--- END PREVIOUS ROWS ---\n\n"
+                "Call the tool again with the corrected, COMPLETE list of rows."
             )
             continue
 
         print(f"[generator] Generated {len(rows)} concept-skill rows")
         return {
-            "csv":        cleaned,
+            "csv":        csv_to_text(rows),
             "input_type": input_type,
             "rows":       rows,
         }
 
-    # Exhausted retries — surface a single ValueError for the orchestrator to handle.
-    raise ValueError(
-        f"Generator failed to produce a valid CSV after {_MAX_GEN_ATTEMPTS} attempts. "
-        f"Last error: {last_error}"
+    # Exhausted retries — surface the last invalid rows (serialized) alongside the error
+    # so the orchestrator can persist them to the escalation folder for debugging.
+    raise GenerationFailedError(
+        f"Generator failed to produce valid rows after {_MAX_GEN_ATTEMPTS} attempts. "
+        f"Last error: {last_error}",
+        last_csv=csv_to_text(last_rows),
     )

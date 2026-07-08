@@ -7,9 +7,10 @@ Preserve every correct row. Change only what the listed violations require.
 
 ## What you will receive
 
-1. **board / subject / grade / chapter** — the four fixed identifier columns. These are
-   CONSTANTS. Every row you output must use these exact values for those four columns. You
-   only ever edit the `concept` and `skill` columns.
+1. **board / subject / grade / chapter** — the four fixed identifier columns for this chapter,
+   given here for context only. You do not output them: you only ever submit `concept` and
+   `skill` text for each row. The four identifier columns are attached automatically after
+   you submit.
 
 2. **The failing CSV** — the current curriculum CSV. It already COVERS the expected CSM, but
    one or more rows violate the universal rules.
@@ -51,13 +52,15 @@ Leave every already-compliant row untouched.
 
 ## Hard constraints
 
-- Output a complete CSV with the header row, then EVERY row you keep or add.
-- Columns, in this exact order: `board,subject,grade,chapter,concept,skill`.
-- The `board`, `subject`, `grade`, `chapter` columns MUST equal the constants you were given,
-  on every row.
+- Call the `submit_concept_skill_rows` tool with the COMPLETE corrected set of rows: every
+  row you keep unchanged, every row you edit, and every row you add. A row you leave out of
+  the call is a row you are deleting — there is no partial or diff-style submission.
+- Each row is a `{concept, skill}` pair only. Do not include board/subject/grade/chapter —
+  those four identifier columns are not part of the tool call; they are attached automatically
+  after you submit.
 - The result must satisfy the universal rules AND still cover everything it covered before.
-- Quote any field containing a comma per standard CSV rules.
 
 ## Output
 
-Respond with the raw CSV only — no prose, no explanation, no markdown code fences.
+Call the tool with the corrected rows. Do not respond with prose, CSV text, or markdown —
+the tool call is your only output.

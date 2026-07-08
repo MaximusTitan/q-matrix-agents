@@ -177,6 +177,96 @@ export interface EscalationReport {
   raw_report: string;
 }
 
+// ─── Structured run record (run.json) ──────────────────────────────────────
+// Persisted for every run (pass or escalation), latest-only. Mirrors the backend
+// skills/run_record.py schema. CSVs are referenced by pointer (CsvRef.file) and
+// fetched lazily from /kb/analytics/chapter/run/file — never inlined here.
+
+export interface CsvRef {
+  file: string; // bare sibling filename, e.g. "gen_attempt_1.csv"
+  rows?: number | null; // precomputed row count for the collapsed header
+  label?: string; // optional display label
+}
+
+export type DoctorKind = "coverage" | "rules";
+
+export interface DoctorGaps {
+  missing_concepts?: string[];
+  missing_skills?: string[];
+  extra_concepts?: string[];
+  extra_skills?: string[];
+  violations?: string[];
+}
+
+export interface DoctorTrailEntry {
+  kind: DoctorKind;
+  chained_from: DoctorKind | null;
+  gaps_addressed: DoctorGaps;
+  csv_file: string | null; // null if the doctor errored / produced invalid CSV
+  error: string | null;
+  reeval: { check1: CheckResult | null; check2: CheckResult | null } | null;
+  passed: boolean;
+  regressed: boolean;
+  regressed_concepts: string[];
+  regressed_skills: string[];
+}
+
+export interface RunGenerator {
+  csv_file: string;
+  rows: number | null;
+  check1: CheckResult | null;
+  check2: CheckResult | null;
+  passed: boolean;
+}
+
+export interface RunAttempt {
+  attempt: number;
+  input_type: string | null;
+  prompt_file: string;
+  generator: RunGenerator | null;
+  doctors: DoctorTrailEntry[];
+  produced_candidate: boolean;
+}
+
+export interface RunJudgeCandidate {
+  id: string;
+  source: string;
+  cycle: number;
+  csv_file: string;
+  concept_count?: number | null;
+  skill_count?: number | null;
+  verdict?: string;
+  note?: string;
+  strengths?: string[];
+  concerns?: string[];
+}
+
+export interface RunJudge {
+  chosen_id: string | null;
+  rationale: string | null;
+  candidates: RunJudgeCandidate[];
+}
+
+export interface ChapterRunRecord {
+  schema_version: number;
+  run_id: string;
+  date: string;
+  board: string;
+  subject: string;
+  grade: string;
+  chapter: string;
+  final_status: "passed" | "escalated";
+  failed_check: string | null;
+  mode: string;
+  selected_by: "single" | "judge" | null;
+  candidate_count: number;
+  judge: RunJudge | null;
+  final_csv_file: string | null;
+  confirmed_checkpoint: boolean;
+  has_prereqs: boolean;
+  attempts: RunAttempt[];
+}
+
 export interface ChapterAnalytics {
   board: string;
   subject: string;
@@ -193,6 +283,8 @@ export interface ChapterAnalytics {
     concepts: string[];
     skills: string[];
   } | null;
+  // Latest structured run; null for legacy chapters predating run records.
+  run: ChapterRunRecord | null;
 }
 
 export interface StartRunOptions extends RunFormValues {

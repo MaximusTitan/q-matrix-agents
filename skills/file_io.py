@@ -6,6 +6,7 @@ No path logic lives here — this module is path-agnostic.
 """
 
 import os
+import shutil
 
 
 def file_exists(path: str) -> bool:
@@ -46,6 +47,17 @@ def create_directory(path: str) -> None:
         OSError: If the directory cannot be created.
     """
     os.makedirs(path, exist_ok=True)
+
+
+def remove_dir(path: str) -> None:
+    """
+    Recursively delete a directory and its contents. Safe to call when the
+    directory does not exist (no error is raised).
+
+    Args:
+        path: Absolute path to the directory to remove.
+    """
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def read_file(path: str) -> str:

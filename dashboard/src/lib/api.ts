@@ -107,3 +107,21 @@ export async function fetchChapterAnalytics(
   }
   return res.json() as Promise<ChapterAnalytics>;
 }
+
+// Fetch one CSV / prompt sibling from a chapter's run/ folder. `file` must be a bare
+// name from run.json's *_file pointers; the backend validates it against a whitelist.
+export async function fetchRunCsv(
+  board: string,
+  subject: string,
+  grade: string,
+  chapter: string,
+  file: string
+): Promise<string> {
+  const params = new URLSearchParams({ board, subject, grade, chapter, filename: file });
+  const res = await fetch(`${API_BASE}/kb/analytics/chapter/run/file?${params}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch run CSV ${file}: ${res.status}`);
+  }
+  const data = (await res.json()) as { csv_text: string };
+  return data.csv_text;
+}

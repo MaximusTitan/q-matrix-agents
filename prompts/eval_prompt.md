@@ -19,20 +19,9 @@ Evaluate every row against every rule provided. Look for violations such as:
 - Duplicate or semantically identical skills under the same concept
 - Any other violation explicitly stated in the rules
 
-IMPORTANT: Your entire response must be a single JSON object. Do not write any analysis, explanation, or markdown before or after it. Start your response with `{` and end it with `}`. Nothing else.
-
-{
-  "passed": true or false,
-  "feedback": [
-    "specific violation — include rule ID, offending row or skill where possible"
-  ]
-}
-
-If the CSV passes all rules:
-{
-  "passed": true,
-  "feedback": []
-}
+Submit your verdict via the `submit_rules_check` tool call — `passed` (bool) and
+`feedback` (one string per violation, empty if passed). Include the rule ID and the
+offending row or skill where possible.
 
 ---
 

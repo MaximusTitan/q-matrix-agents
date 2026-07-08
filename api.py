@@ -469,14 +469,53 @@ async def kb_analytics_chapter(board: str, subject: str, grade: str, chapter: st
     except Exception:
         pass
 
+    # Structured run record (latest run — present for both passing and escalated
+    # chapters once they have been run under the run-record era; None for legacy
+    # chapters, in which case the frontend falls back to confirmed/escalations).
+    try:
+        detail["run"] = kb_access.load_run_record(board, subject, grade, chapter)
+    except ValueError:
+        detail["run"] = None
+
     if (
         detail["confirmed"] is None
         and not detail["escalations"]
         and detail["concept_skill_map"] is None
+        and detail.get("run") is None
     ):
         raise HTTPException(status_code=404, detail="No analytics found for chapter")
 
     return detail
+
+
+@app.get("/kb/analytics/chapter/run/file")
+async def kb_analytics_chapter_run_file(
+    board: str, subject: str, grade: str, chapter: str, filename: str
+):
+    """
+    Serve one sibling artifact (a CSV / prompt / report) from a chapter's run/ folder.
+
+    ``filename`` must be a bare name taken from run.json's ``*_file`` pointers; it is
+    validated against a strict whitelist in kb_access.load_run_artifact before it ever
+    touches the filesystem (path-traversal guard). Returns the raw text plus a parsed
+    preview, mirroring how the confirmed CSV is returned by /kb/analytics/chapter.
+    """
+    try:
+        csv_text = kb_access.load_run_artifact(board, subject, grade, chapter, filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Run artifact not found: {filename}")
+
+    rows, headers = [], []
+    if filename.endswith(".csv"):
+        try:
+            rows = parse_csv(csv_text)
+            headers = list(rows[0].keys()) if rows else []
+        except ValueError:
+            pass
+
+    return {"filename": filename, "csv_text": csv_text, "headers": headers, "rows": rows}
 
 
 @app.get("/runs")

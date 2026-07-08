@@ -19,12 +19,12 @@ Skills used:
     diff       — diff_full (Check 2)
 """
 
-import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 
 from skills.kb_access import load_rules, load_concept_skill_map
-from skills.llm import call_llm
+from skills.llm import call_llm_structured
+from skills.csv_utils import RULES_CHECK_TOOL
 from skills.diff import diff_full
 
 _PROMPT_PATH = os.path.join(
@@ -34,20 +34,6 @@ _PROMPT_PATH = os.path.join(
 
 with open(_PROMPT_PATH, "r", encoding="utf-8") as f:
     SYSTEM_PROMPT = f.read()
-
-
-def _parse_llm_json(raw: str, check_name: str) -> dict | None:
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        cleaned = "\n".join(
-            l for l in lines if not l.strip().startswith("```")
-        ).strip()
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        print(f"[eval] {check_name} — LLM returned invalid JSON. Error: {e}\nRaw:\n{raw[:500]}")
-        return None
 
 
 def run_check1(csv: str, board: str, subject: str, grade: str) -> dict:
@@ -68,19 +54,7 @@ def run_check1(csv: str, board: str, subject: str, grade: str) -> dict:
 --- GENERATED CSV ---
 {csv}"""
 
-    for attempt in range(2):
-        raw    = call_llm(SYSTEM_PROMPT, user_content)
-        result = _parse_llm_json(raw, "Check 1")
-        if result is not None:
-            break
-        print(f"[eval] Check 1 — retrying LLM call ({attempt + 1}/2)")
-
-    if result is None:
-        print("[eval] Check 1 — both attempts returned non-JSON; marking as failed")
-        return {
-            "passed":   False,
-            "feedback": ["Check 1 evaluation failed — LLM returned non-JSON output. Re-run to retry."],
-        }
+    result = call_llm_structured(SYSTEM_PROMPT, user_content, RULES_CHECK_TOOL)
 
     passed   = result.get("passed", False)
     feedback = result.get("feedback", [])
