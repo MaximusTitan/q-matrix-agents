@@ -4,15 +4,22 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight, Copy, Download, X } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { copyCsv, downloadCsv } from "@/lib/csv-actions";
+import { fetchRunCsv } from "@/lib/api";
+import { doctorStepsFromRecord } from "@/lib/doctor-trail";
 import { cn } from "@/lib/utils";
 import type {
   AnalyticsChapter,
   AnalyticsResponse,
   ChapterAnalytics,
+  ChapterRunRecord,
   ChapterStatus,
   EscalationAttempt,
   EscalationReport,
+  RunAttempt,
 } from "@/lib/types";
+import { CheckStatus, CheckSummary } from "./shared/check-summary";
+import { CsvEntry } from "./shared/csv-entry";
+import { DoctorTrail } from "./shared/doctor-trail";
 
 export interface SelectedChapter {
   board: string;
@@ -458,6 +465,125 @@ function ConceptSkillMapCard({
   );
 }
 
+// ─── Structured run insights (every CSV + checks + doctor trail) ────────────────
+
+function AttemptInsightCard({
+  attempt,
+  loadCsv,
+}: {
+  attempt: RunAttempt;
+  loadCsv: (file: string) => Promise<string>;
+}) {
+  const gen = attempt.generator;
+  const doctorSteps = doctorStepsFromRecord(attempt.doctors, loadCsv);
+  return (
+    <div className="space-y-3 rounded border border-border bg-background p-3">
+      <div className="text-[11px] font-bold">
+        Attempt {attempt.attempt}
+        {attempt.input_type && (
+          <span className="ml-2 font-normal text-muted-foreground">({attempt.input_type})</span>
+        )}
+      </div>
+
+      {gen && (
+        <div className="space-y-2">
+          <CsvEntry
+            source={{
+              kind: "ref",
+              file: gen.csv_file,
+              rows: gen.rows,
+              label: "Generator CSV",
+              load: loadCsv,
+            }}
+          />
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <CheckSummary title="Check 1 — Universal Rules" check={gen.check1} />
+            <CheckSummary title="Check 2 — CSM Coverage" check={gen.check2} />
+          </div>
+        </div>
+      )}
+
+      <DoctorTrail steps={doctorSteps} />
+    </div>
+  );
+}
+
+function RunInsightsCard({
+  run,
+  selected,
+}: {
+  run: ChapterRunRecord;
+  selected: SelectedChapter;
+}) {
+  const [showRationale, setShowRationale] = useState(false);
+  const loadCsv = (file: string) =>
+    fetchRunCsv(selected.board, selected.subject, selected.grade, selected.chapter, file);
+
+  const passed = run.final_status === "passed";
+  const accent = passed ? "var(--qm-green)" : "var(--qm-red)";
+
+  return (
+    <div className="rounded-lg border bg-card" style={{ borderColor: `color-mix(in srgb, ${accent} 40%, transparent)` }}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border px-4 py-3 text-[11px]">
+        <span className="font-bold" style={{ color: accent }}>
+          Run Insights — {passed ? "Passed" : "Escalated"}
+        </span>
+        <span className="text-muted-foreground">{run.date}</span>
+        <span>
+          <span className="text-muted-foreground">Attempts: </span>
+          <span className="font-semibold">{run.attempts.length}</span>
+        </span>
+        {run.selected_by && (
+          <span>
+            <span className="text-muted-foreground">Selected by: </span>
+            <span className="font-semibold">
+              {run.selected_by}
+              {run.selected_by === "judge" && ` (of ${run.candidate_count})`}
+            </span>
+          </span>
+        )}
+        {run.judge?.rationale && (
+          <button
+            onClick={() => setShowRationale((p) => !p)}
+            className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground hover:text-foreground"
+          >
+            {showRationale ? "Hide" : "Show"} judge rationale
+          </button>
+        )}
+      </div>
+
+      {showRationale && run.judge?.rationale && (
+        <div className="border-b border-border px-4 py-2 text-[11px] leading-relaxed text-foreground/70">
+          {run.judge.rationale}
+        </div>
+      )}
+
+      <div className="space-y-2 p-3">
+        {run.attempts.map((a) => (
+          <AttemptInsightCard key={a.attempt} attempt={a} loadCsv={loadCsv} />
+        ))}
+
+        {run.final_csv_file && (
+          <div className="rounded border border-[var(--qm-green)]/30 bg-background p-3">
+            <div className="mb-2 flex items-center gap-2 text-[11px] font-bold">
+              Final CSV
+              <CheckStatus passed={passed ? true : null} />
+            </div>
+            <CsvEntry
+              source={{
+                kind: "ref",
+                file: run.final_csv_file,
+                label: passed ? "Confirmed (final)" : "Last CSV (final)",
+                load: loadCsv,
+              }}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DetailView({
   selected,
   detail,
@@ -498,10 +624,15 @@ function DetailView({
             {detail.confirmed && (
               <ConfirmedCard detail={detail.confirmed} chapter={selected.chapter} />
             )}
-            {detail.escalations.map((r) => (
-              <EscalationCard key={r.folder} report={r} />
-            ))}
-            {!detail.confirmed && !detail.escalations.length && (
+            {/* Structured run insights (every CSV + checks + doctor trail) for both
+                passing and escalated chapters once a run.json exists. */}
+            {detail.run && <RunInsightsCard run={detail.run} selected={selected} />}
+            {/* Legacy escalation view only for chapters predating run records. */}
+            {!detail.run &&
+              detail.escalations.map((r) => (
+                <EscalationCard key={r.folder} report={r} />
+              ))}
+            {!detail.confirmed && !detail.run && !detail.escalations.length && (
               <div className="text-[11px] text-muted-foreground">
                 No confirmed CSV or escalation on record — reached concept-skill-map
                 extraction only.

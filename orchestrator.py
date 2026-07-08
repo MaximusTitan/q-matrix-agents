@@ -40,9 +40,13 @@ from skills.kb_access import (
     write_escalation,
     save_extraction_guidance,
     save_confirmed_csv,
+    save_run_record,
+    confirmed_csv_has_prereqs,
 )
 from skills.csv_utils import parse_csv, enriched_csv_to_text, validate_csv_schema
 from skills.git_sync import pull_kb, push_kb
+from skills.run_record import RunRecordBuilder
+from skills.report_render import render_report_md
 
 MAX_ATTEMPTS = 3
 
@@ -51,6 +55,16 @@ MAX_ATTEMPTS = 3
 
 def _noop(*args, **kwargs):
     pass
+
+
+def _persist_run_record(board, subject, grade, chapter, record, artifacts, report_md):
+    """Persist the structured run record, defensively — a persistence failure must
+    never break an otherwise-complete run (mirrors _run_prerequisite_phase)."""
+    try:
+        path = save_run_record(board, subject, grade, chapter, record, artifacts, report_md)
+        print(f"[orchestrator] Saved run record: {path}")
+    except Exception as e:
+        print(f"[orchestrator] Warning: failed to persist run record — {e}")
 
 
 def _revision_mode(input_type: str, c1_passed: bool, c2_passed: bool) -> str:
@@ -193,6 +207,21 @@ def run_prerequisite_only(csv_text: str, emit=None) -> dict:
         board, subject, grade, chapter, attempt=1, csv_text=csv_text, emit=emit
     )
 
+    # ── Persist a minimal run record for the "bring your own CSV" path ──────────
+    builder = RunRecordBuilder(
+        board, subject, grade, chapter, date.today().isoformat(),
+        mode="prerequisite_only",
+    )
+    builder.finalize(
+        final_status="passed", failed_check=None,
+        final_csv=final_csv, final_csv_name="confirmed.csv",
+        confirmed_checkpoint=bool(checkpoint),
+        has_prereqs=confirmed_csv_has_prereqs(board, subject, grade, chapter),
+    )
+    record, artifacts = builder.build()
+    _persist_run_record(board, subject, grade, chapter, record, artifacts,
+                        render_report_md(record))
+
     emit("pipeline_passed", {
         "attempt":         1,
         "csv":             final_csv,
@@ -295,6 +324,29 @@ def _doctor_and_record(
         {"csv": str|None, "passed": bool} — csv is None if doctoring produced an
         invalid CSV or errored. Never raises.
     """
+    gaps_addressed = {
+        "missing_concepts": check2.get("missing_concepts", []),
+        "missing_skills":   check2.get("missing_skills",   []),
+        "extra_concepts":   check2.get("extra_concepts",   []),
+        "extra_skills":     check2.get("extra_skills",     []),
+        "violations":       [],
+    }
+
+    def _coverage_error(message: str) -> dict:
+        """Failure result carrying a coverage doctor_entry so the run record still
+        captures that a doctor pass was attempted and why it produced no CSV."""
+        return {
+            "csv": None, "passed": False,
+            "doctor_entries": [{
+                "kind": "coverage", "chained_from": None,
+                "gaps_addressed": gaps_addressed,
+                "csv": None, "error": message,
+                "reeval_check1": None, "reeval_check2": None,
+                "passed": False, "regressed": False,
+                "regressed_concepts": [], "regressed_skills": [],
+            }],
+        }
+
     emit("agent_started", {
         "agent":   "Doctor",
         "attempt": attempt,
@@ -318,14 +370,15 @@ def _doctor_and_record(
     except Exception as e:
         print(f"[orchestrator] CSV doctoring errored — {e}")
         emit("agent_completed", {"agent": "Doctor", "output": {"error": str(e)}})
-        return {"csv": None, "passed": False}
+        return _coverage_error(str(e))
 
     if doc.get("csv") is None:
+        error = doc.get("error", "invalid CSV after retry")
         emit("agent_completed", {
             "agent":  "Doctor",
-            "output": {"error": doc.get("error", "invalid CSV after retry")},
+            "output": {"error": error},
         })
-        return {"csv": None, "passed": False}
+        return _coverage_error(error)
 
     doctored_csv = doc["csv"]
     emit("agent_completed", {
@@ -405,12 +458,23 @@ def _doctor_and_record(
           f"check1 {'✓' if dc1['passed'] else '✗'}, check2 {'✓' if dc2['passed'] else '✗'}"
           f"{' (REGRESSED)' if regressed else ''}")
 
+    coverage_entry = {
+        "kind": "coverage", "chained_from": None,
+        "gaps_addressed": gaps_addressed,
+        "csv": doctored_csv, "error": None,
+        "reeval_check1": dc1, "reeval_check2": dc2,
+        "passed": doc_eval["passed"], "regressed": regressed,
+        "regressed_concepts": regressions["concepts"],
+        "regressed_skills":   regressions["skills"],
+    }
+
     # ── Doctor chain: coverage fixed but rules broke → Rules Doctor ─────────────
     # The coverage Doctor closed the Check-2 gap but introduced a Check-1 (rules)
     # violation — a CSV one rule-fix away from passing. Hand it to the Rules Doctor,
     # which fixes rules WHILE preserving coverage (its own regression guard protects
     # the coverage just gained). One bounded extra pass — no loop. Only chain when the
     # coverage gain is real (not regressed); a regressed CSV is not worth rescuing.
+    chained_entries: list[dict] = []
     if dc2["passed"] and not dc1["passed"] and not regressed:
         print("[orchestrator] Coverage Doctor fixed Check 2 but broke Check 1 — "
               "chaining Rules Doctor to repair rules while preserving coverage")
@@ -421,8 +485,15 @@ def _doctor_and_record(
             board=board, subject=subject, grade=grade, chapter=chapter,
             attempt=attempt,
         )
+        # Mark every chained entry as descending from the coverage pass so the trail
+        # reads as a chain, not two independent doctors.
+        chained_entries = chained.get("doctor_entries", [])
+        for e in chained_entries:
+            e["chained_from"] = "coverage"
         if chained.get("csv") is not None:
-            # The chained result (rules-repaired) supersedes the coverage-only output.
+            # The chained result (rules-repaired) supersedes the coverage-only output,
+            # but the trail keeps BOTH the coverage pass and the chained rules pass.
+            chained["doctor_entries"] = [coverage_entry, *chained_entries]
             return chained
 
     return {
@@ -432,6 +503,7 @@ def _doctor_and_record(
         "regressed":          regressed,
         "regressed_concepts": regressions["concepts"],
         "regressed_skills":   regressions["skills"],
+        "doctor_entries":     [coverage_entry, *chained_entries],
     }
 
 
@@ -461,6 +533,29 @@ def _rules_doctor_and_record(
         {"csv": str|None, "passed": bool} — csv is None if doctoring produced an
         invalid CSV or errored. Never raises.
     """
+    gaps_addressed = {
+        "missing_concepts": [],
+        "missing_skills":   [],
+        "extra_concepts":   [],
+        "extra_skills":     [],
+        "violations":       check1.get("feedback", []),
+    }
+
+    def _rules_error(message: str) -> dict:
+        """Failure result carrying a rules doctor_entry so the run record still
+        captures the attempted repair."""
+        return {
+            "csv": None, "passed": False,
+            "doctor_entries": [{
+                "kind": "rules", "chained_from": None,
+                "gaps_addressed": gaps_addressed,
+                "csv": None, "error": message,
+                "reeval_check1": None, "reeval_check2": None,
+                "passed": False, "regressed": False,
+                "regressed_concepts": [], "regressed_skills": [],
+            }],
+        }
+
     emit("agent_started", {
         "agent":   "Doctor (rules)",
         "attempt": attempt,
@@ -482,14 +577,15 @@ def _rules_doctor_and_record(
     except Exception as e:
         print(f"[orchestrator] Rules doctoring errored — {e}")
         emit("agent_completed", {"agent": "Doctor (rules)", "output": {"error": str(e)}})
-        return {"csv": None, "passed": False}
+        return _rules_error(str(e))
 
     if doc.get("csv") is None:
+        error = doc.get("error", "invalid CSV after retry")
         emit("agent_completed", {
             "agent":  "Doctor (rules)",
-            "output": {"error": doc.get("error", "invalid CSV after retry")},
+            "output": {"error": error},
         })
-        return {"csv": None, "passed": False}
+        return _rules_error(error)
 
     doctored_csv = doc["csv"]
     emit("agent_completed", {
@@ -551,6 +647,16 @@ def _rules_doctor_and_record(
           f"check1 {'✓' if dc1['passed'] else '✗'}, check2 {'✓' if dc2['passed'] else '✗'}"
           f"{' (REGRESSED)' if regressed else ''}")
 
+    rules_entry = {
+        "kind": "rules", "chained_from": None,
+        "gaps_addressed": gaps_addressed,
+        "csv": doctored_csv, "error": None,
+        "reeval_check1": dc1, "reeval_check2": dc2,
+        "passed": doc_eval["passed"], "regressed": regressed,
+        "regressed_concepts": regressions["concepts"],
+        "regressed_skills":   regressions["skills"],
+    }
+
     return {
         "csv":                doctored_csv,
         "passed":             doc_eval["passed"],
@@ -558,6 +664,7 @@ def _rules_doctor_and_record(
         "regressed":          regressed,
         "regressed_concepts": regressions["concepts"],
         "regressed_skills":   regressions["skills"],
+        "doctor_entries":     [rules_entry],
     }
 
 
@@ -607,14 +714,17 @@ def run_pipeline(
     current_input_type    = None
     eval_result           = None
     revision_occurred     = False
-    attempt_history       = []
     attempt               = 0
+
+    # ── Structured run record ───────────────────────────────────────────────────
+    # Accumulates every CSV + its eval checks + the doctor trail as the run proceeds,
+    # and is persisted (latest-only) for BOTH passing and escalated runs.
+    builder = RunRecordBuilder(board, subject, grade, chapter, date.today().isoformat())
 
     # ── Check-2-only path state ────────────────────────────────────────────────
     check2_only_revisions = 0     # drives subject(1st) → grade(2nd) specialization degree
     forced_level          = None  # forces the NEXT generation to a specific prompt level
     passing_candidates    = []    # every CSV that passed BOTH checks (generated + doctored)
-    doctored_artifacts    = []    # [{attempt, csv, passed}] — persisted on escalation
 
     def _escalate_generation_failure(err: Exception) -> dict:
         """Escalate (rather than crash) when generation can't yield a valid CSV.
@@ -627,14 +737,18 @@ def run_pipeline(
         # GenerationFailedError carries the last invalid CSV text; current_csv is never
         # set on a generation-stage failure since generation didn't succeed this attempt.
         failed_csv = getattr(err, "last_csv", "") or current_csv or ""
+        builder.finalize(
+            final_status="escalated", failed_check="generation",
+            final_csv=failed_csv, final_csv_name="last_csv.csv",
+            confirmed_checkpoint=False, has_prereqs=False,
+        )
+        record, artifacts = builder.build()
+        report_md = render_report_md(record)
+        _persist_run_record(board, subject, grade, chapter, record, artifacts, report_md)
         folder = write_escalation(
             board=board, subject=subject, grade=grade, chapter=chapter,
             date=date.today().isoformat(),
-            failed_check="generation",
-            attempts=attempt,
-            last_csv=failed_csv,
-            attempt_history=attempt_history,
-            doctored_artifacts=doctored_artifacts,
+            record=record, artifacts=artifacts,
         )
         emit("pipeline_escalated", {
             "attempt":       attempt,
@@ -763,13 +877,15 @@ def run_pipeline(
         print(f"[orchestrator] Check 1: {'✓ PASSED' if c1['passed'] else '✗ FAILED'}")
         print(f"[orchestrator] Check 2: {'✓ PASSED' if c2['passed'] else '✗ FAILED'}")
 
-        attempt_history.append({
-            "attempt":    attempt,
-            "input_type": current_input_type,
-            "check1":     c1,
-            "check2":     c2,
-            "prompt":     prompt_snapshot,
-        })
+        builder.add_attempt(
+            attempt=attempt,
+            input_type=current_input_type,
+            prompt=prompt_snapshot,
+            gen_csv=current_csv,
+            gen_rows=len(gen_result["rows"]),
+            check1=c1,
+            check2=c2,
+        )
 
         if c1["passed"] and c2["passed"]:
             print(f"\n[orchestrator] ✓ Pipeline passed on attempt {attempt}")
@@ -805,12 +921,8 @@ def run_pipeline(
                     board=board, subject=subject, grade=grade, chapter=chapter,
                     attempt=attempt,
                 )
-                doctored_artifacts.append({
-                    "attempt":   attempt,
-                    "csv":       doctored_this_attempt["csv"],
-                    "passed":    doctored_this_attempt["passed"],
-                    "regressed": doctored_this_attempt.get("regressed", False),
-                })
+                for entry in doctored_this_attempt.get("doctor_entries", []):
+                    builder.add_doctor(attempt=attempt, **entry)
                 if doctored_this_attempt["passed"]:
                     passing_candidates.append(
                         _candidate("doctored", attempt,
@@ -849,13 +961,8 @@ def run_pipeline(
                 board=board, subject=subject, grade=grade, chapter=chapter,
                 attempt=attempt,
             )
-            doctored_artifacts.append({
-                "attempt":   attempt,
-                "kind":      "rules",
-                "csv":       rules_doctored["csv"],
-                "passed":    rules_doctored["passed"],
-                "regressed": rules_doctored.get("regressed", False),
-            })
+            for entry in rules_doctored.get("doctor_entries", []):
+                builder.add_doctor(attempt=attempt, **entry)
             if rules_doctored["passed"]:
                 passing_candidates.append(
                     _candidate("rules_doctored", attempt,
@@ -980,6 +1087,18 @@ def run_pipeline(
             chosen          = passing_candidates[0]
             selected_by     = "single"
             judge_rationale = None
+            builder.set_judge(
+                selected_by="single", candidate_count=1,
+                chosen_id=chosen["id"], rationale=None,
+                candidates=[{
+                    "id":            chosen["id"],
+                    "source":        chosen["source"],
+                    "cycle":         chosen["cycle"],
+                    "concept_count": chosen["concept_count"],
+                    "skill_count":   chosen["skill_count"],
+                    "verdict":       "chosen",
+                }],
+            )
         else:
             # ── ≥2 passing CSVs → Judge picks one ──────────────────────────────
             try:
@@ -1044,10 +1163,27 @@ def run_pipeline(
             print(f"[orchestrator] Judge selected {chosen['id']} "
                   f"from {len(passing_candidates)} candidates")
 
+            builder.set_judge(
+                selected_by="judge", candidate_count=len(passing_candidates),
+                chosen_id=chosen["id"], rationale=judge_rationale,
+                candidates=merged,
+            )
+
         # ── Prerequisite mapping (Level 1, within-chapter) + persist checkpoint ──
         final_csv, checkpoint = _run_prerequisite_phase(
             board, subject, grade, chapter, attempt, chosen["csv"], emit
         )
+
+        # ── Persist the structured run record (latest-only) ─────────────────────
+        builder.finalize(
+            final_status="passed", failed_check=None,
+            final_csv=final_csv, final_csv_name="confirmed.csv",
+            confirmed_checkpoint=bool(checkpoint),
+            has_prereqs=confirmed_csv_has_prereqs(board, subject, grade, chapter),
+        )
+        record, artifacts = builder.build()
+        _persist_run_record(board, subject, grade, chapter, record, artifacts,
+                            render_report_md(record))
 
         emit("pipeline_passed", {
             "attempt":         attempt,
@@ -1070,14 +1206,19 @@ def run_pipeline(
     # ── Escalate ──────────────────────────────────────────────────────────────
     failed_check = _failed_check_label(c1["passed"], c2["passed"])
 
+    builder.finalize(
+        final_status="escalated", failed_check=failed_check,
+        final_csv=current_csv or "", final_csv_name="last_csv.csv",
+        confirmed_checkpoint=False, has_prereqs=False,
+    )
+    record, artifacts = builder.build()
+    report_md = render_report_md(record)
+    _persist_run_record(board, subject, grade, chapter, record, artifacts, report_md)
+
     folder = write_escalation(
         board=board, subject=subject, grade=grade, chapter=chapter,
         date=date.today().isoformat(),
-        failed_check=failed_check,
-        attempts=attempt,
-        last_csv=current_csv or "",
-        attempt_history=attempt_history,
-        doctored_artifacts=doctored_artifacts,
+        record=record, artifacts=artifacts,
     )
 
     print(f"\n{'='*60}")
@@ -1185,7 +1326,9 @@ def main():
             human_feedback=args.human_feedback,
         )
 
-    if not args.no_sync and (result["passed"] or args.reject):
+    # Push after every run (pass OR escalation) so the structured run record — which
+    # is now written on escalations too — reaches the remote KB. Gated only by --no-sync.
+    if not args.no_sync:
         try:
             push_kb(args.board, args.subject, args.grade, args.chapter)
         except Exception as e:

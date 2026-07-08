@@ -12,9 +12,10 @@ import json
 from dotenv import load_dotenv
 from skills.file_io import (
     read_file, write_file, append_file,
-    file_exists, create_directory
+    file_exists, create_directory, remove_dir
 )
 from skills.csv_utils import parse_csv
+from skills.report_render import render_report_md
 
 load_dotenv()
 KB_ROOT = os.getenv("KB_ROOT")
@@ -39,6 +40,12 @@ def _confirmed_csv_path(board: str, subject: str, grade: str, chapter: str) -> s
 
 def _chapter_pdf_path(board: str, subject: str, grade: str, chapter: str) -> str:
     return os.path.join(_textbook_path(board, subject, grade, chapter), "chapter.pdf")
+
+def _run_dir_path(board: str, subject: str, grade: str, chapter: str) -> str:
+    return os.path.join(_textbook_path(board, subject, grade, chapter), "run")
+
+def _run_record_path(board: str, subject: str, grade: str, chapter: str) -> str:
+    return os.path.join(_run_dir_path(board, subject, grade, chapter), "run.json")
 
 def _grade_prompt_path(board: str, subject: str, grade: str) -> str:
     return os.path.join(KB_ROOT, "prompt-library", board, subject, grade, "prompt.md")
@@ -349,6 +356,116 @@ def append_grade_rule(board: str, subject: str, grade: str, reason: str) -> None
     append_file(path, rule_entry)
 
 
+# ─── Run Records ─────────────────────────────────────────────────────────────
+
+# Sibling files inside a chapter's run/ folder are named from a fixed, safe
+# alphabet. This regex is the whitelist that guards load_run_artifact against a
+# user-controlled filename (path traversal, absolute paths, hidden files).
+_RUN_FILE_RE = re.compile(r"^[A-Za-z0-9_]+\.(csv|md|json)$")
+
+
+def save_run_record(
+    board: str,
+    subject: str,
+    grade: str,
+    chapter: str,
+    record: dict,
+    artifacts: dict[str, str],
+    report_md: str,
+) -> str:
+    """
+    Persist the structured run record for a chapter, overwriting any previous run.
+
+    Layout (latest run only — the folder is cleared first so a shorter re-run never
+    leaves orphaned siblings from a longer previous run):
+        textbooks/{board}/{subject}/{grade}/{chapter}/run/
+            run.json                          ← structured source of truth (pointers)
+            gen_attempt_{n}.csv               ← generator output per attempt
+            doctored_attempt_{n}.csv          ← coverage-doctor output
+            doctored_rules_attempt_{n}.csv    ← rules-doctor output
+            attempt_{n}_prompt.md             ← generation-guidance snapshot
+            confirmed.csv | last_csv.csv      ← final CSV
+            report.md                         ← derived human-readable summary
+
+    Args:
+        record:    Fully-assembled run.json dict (with *_file pointers only).
+        artifacts: Map of sibling filename -> file content (CSV text / prompt md).
+        report_md: Pre-rendered report.md (from report_render.render_report_md).
+
+    Returns:
+        Path to the run/ folder.
+    """
+    run_dir = _run_dir_path(board, subject, grade, chapter)
+    remove_dir(run_dir)
+    create_directory(run_dir)
+
+    # json.dump with a stable key order + indent keeps re-run diffs readable.
+    record_json = json.dumps(record, indent=2, ensure_ascii=False, sort_keys=False)
+    write_file(os.path.join(run_dir, "run.json"), record_json)
+
+    for filename, content in artifacts.items():
+        write_file(os.path.join(run_dir, filename), content or "")
+
+    write_file(os.path.join(run_dir, "report.md"), report_md)
+
+    return run_dir
+
+
+def run_record_exists(board: str, subject: str, grade: str, chapter: str) -> bool:
+    """Whether a structured run/run.json exists for a chapter."""
+    return file_exists(_run_record_path(board, subject, grade, chapter))
+
+
+def load_run_record(board: str, subject: str, grade: str, chapter: str) -> dict | None:
+    """
+    Load the latest structured run record for a chapter.
+
+    Returns:
+        The parsed run.json dict, or None if the chapter has no run/ folder yet
+        (legacy chapters predating run records).
+
+    Raises:
+        ValueError: if run.json exists but is malformed.
+    """
+    path = _run_record_path(board, subject, grade, chapter)
+    if not file_exists(path):
+        return None
+    # Read raw (not read_file, which strips Obsidian YAML frontmatter) — JSON must
+    # be parsed byte-for-byte.
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Malformed run.json at {path}: {e}") from e
+
+
+def load_run_artifact(board: str, subject: str, grade: str, chapter: str,
+                      filename: str) -> str:
+    """
+    Read one sibling artifact (a CSV / prompt / report) from a chapter's run/ folder.
+
+    SECURITY: ``filename`` is user-controlled (it flows in from an API query param).
+    It MUST match the strict whitelist ``_RUN_FILE_RE`` — a bare name from run.json's
+    ``*_file`` pointers, with no path separators, no ``..`` and no leading dot — BEFORE
+    it is ever joined onto a filesystem path.
+
+    Returns:
+        The artifact's text content.
+
+    Raises:
+        ValueError:        if filename fails whitelist validation.
+        FileNotFoundError: if the artifact does not exist in the run/ folder.
+    """
+    if not _RUN_FILE_RE.match(filename):
+        raise ValueError(f"Invalid run artifact filename: {filename!r}")
+
+    path = os.path.join(_run_dir_path(board, subject, grade, chapter), filename)
+    if not file_exists(path):
+        raise FileNotFoundError(f"Run artifact not found: {filename}")
+    return read_file(path)
+
+
 # ─── Escalations ─────────────────────────────────────────────────────────────
 
 def write_escalation(
@@ -357,40 +474,25 @@ def write_escalation(
     grade: str,
     chapter: str,
     date: str,
-    failed_check: str,
-    attempts: int,
-    last_csv: str,
-    attempt_history: list[dict],
-    doctored_artifacts: list[dict] = None,
+    record: dict,
+    artifacts: dict[str, str],
 ) -> str:
     """
-    Write an escalation report folder to the KB escalations directory.
+    Write a dated escalation snapshot folder to the KB escalations directory.
+
+    Unlike the chapter's run/ folder (latest only), escalation folders accumulate by
+    date so a chapter's failure history is preserved. The folder is a self-contained
+    snapshot of the run that escalated.
 
     Folder structure:
         escalations/{board}_{subject}_{grade}_{chapter}_{date}/
-            report.md           ← human-readable summary with full feedback history
-            attempt_1_prompt.md ← prompt used in attempt 1
-            attempt_2_prompt.md ← prompt used in attempt 2
-            attempt_3_prompt.md ← prompt used in attempt 3
-            last_csv.csv        ← final generated CSV
+            report.md                         ← derived human-readable summary
+            run.json                          ← structured record (same as run/run.json)
+            attempt_{n}_prompt.md, *.csv      ← every artifact of the run
 
     Args:
-        attempt_history: List of dicts, one per attempt:
-            {
-                "attempt":    int,
-                "input_type": str,
-                "check1":     { "passed": bool, "feedback": list },
-                "check2":     { "passed": bool, "feedback": list,
-                                "missing_concepts": list, "missing_skills": list },
-                "prompt":     str,
-            }
-        doctored_artifacts: Optional list of doctored-CSV records from the
-            Check-2-only path, one per doctored attempt:
-            {
-                "attempt": int,
-                "csv":     str,
-                "passed":  bool,   # did the doctored CSV pass re-verification?
-            }
+        record:    The assembled run.json dict for the escalated run.
+        artifacts: Map of sibling filename -> content (from RunRecordBuilder.build()).
 
     Returns:
         Path to the escalation folder.
@@ -401,124 +503,13 @@ def write_escalation(
     folder_path  = os.path.join(KB_ROOT, "escalations", folder_name)
     create_directory(folder_path)
 
-    # ── Write individual prompt files ─────────────────────────────────────────
-    for entry in attempt_history:
-        n = entry["attempt"]
-        prompt_path = os.path.join(folder_path, f"attempt_{n}_prompt.md")
-        write_file(prompt_path, entry.get("prompt", ""))
-
-    # ── Write last CSV ────────────────────────────────────────────────────────
-    csv_path = os.path.join(folder_path, "last_csv.csv")
-    write_file(csv_path, last_csv)
-
-    # ── Write doctored CSVs (Check-2-only path) ───────────────────────────────
-    for doc in (doctored_artifacts or []):
-        n = doc.get("attempt")
-        doc_csv = doc.get("csv") or ""
-        if doc_csv:
-            write_file(os.path.join(folder_path, f"doctored_attempt_{n}.csv"), doc_csv)
-
-    # ── Build report.md ───────────────────────────────────────────────────────
-    history_sections = []
-    for entry in attempt_history:
-        n          = entry["attempt"]
-        input_type = entry.get("input_type", "unknown")
-        c1         = entry.get("check1", {})
-        c2         = entry.get("check2", {})
-
-        c1_status = "✓ PASSED" if c1.get("passed") else "✗ FAILED"
-        c2_status = "✓ PASSED" if c2.get("passed") else "✗ FAILED"
-
-        c1_feedback = "\n".join(f"  - {f}" for f in c1.get("feedback", [])) or "  None"
-        c2_feedback = "\n".join(f"  - {f}" for f in c2.get("feedback", [])) or "  None"
-
-        missing_concepts = ", ".join(c2.get("missing_concepts", [])) or "None"
-        missing_skills   = ", ".join(c2.get("missing_skills",   [])) or "None"
-
-        history_sections.append(f"""### Attempt {n} (input_type: {input_type})
-
-**Prompt used:** see `attempt_{n}_prompt.md`
-
-**Check 1 — Universal Rules:** {c1_status}
-{c1_feedback}
-
-**Check 2 — CSM Coverage:** {c2_status}
-{c2_feedback}
-Missing concepts: {missing_concepts}
-Missing skills:   {missing_skills}
-""")
-
-    history_text = "\n---\n\n".join(history_sections)
-
-    # ── Doctored-CSV section (Check-2-only path) ──────────────────────────────
-    doctored_section = ""
-    if doctored_artifacts:
-        lines = []
-        for doc in doctored_artifacts:
-            n      = doc.get("attempt")
-            kind   = "rules (Check-1)" if doc.get("kind") == "rules" else "coverage (Check-2)"
-            status = "✓ passed re-verification" if doc.get("passed") else "✗ failed re-verification"
-            has_csv = bool(doc.get("csv"))
-            file_note = f"see `doctored_attempt_{n}.csv`" if has_csv else "schema-invalid — not written"
-            lines.append(f"- Attempt {n} [{kind}]: {status} ({file_note})")
-        doctored_section = (
-            "## Doctored CSVs (surgical repairs)\n\n"
-            "These are surgical patches of the failing CSV produced by the revision agent. "
-            "None passed both checks (otherwise the pipeline would have returned one instead "
-            "of escalating). They are kept for diagnostic review.\n\n"
-            + "\n".join(lines)
-            + "\n\n---\n\n"
-        )
-
-    report = f"""# Escalation Report
-
-**Board:** {board}
-**Subject:** {subject}
-**Grade:** {grade}
-**Chapter:** {chapter}
-**Date:** {date}
-**Failed Check:** {failed_check}
-**Total Attempts:** {attempts}
-
----
-
-## Attempt History
-
-{history_text}
----
-
-{doctored_section}## Final CSV
-
-See `last_csv.csv` in this folder.
-
----
-
-## What To Do
-
-Review the attempt history above, then choose an action:
-
-**Option A — Resume with human feedback:**
-```
-python orchestrator.py --board "{board}" --subject "{subject}" --grade "{grade}" --chapter "{chapter}" --human-feedback "your instructions here"
-```
-
-**Option B — Re-extract the concept-skill-map:**
-```
-python orchestrator.py --board "{board}" --subject "{subject}" --grade "{grade}" --chapter "{chapter}" --re-extract --map-guidance "your guidance here"
-```
-
-**Option C — Reject with a new grade rule:**
-```
-python orchestrator.py --reject --board "{board}" --subject "{subject}" --grade "{grade}" --chapter "{chapter}" --reason "your rule here"
-```
-
-## Human Feedback
-
-<!-- Add your notes here before re-running -->
-"""
-
-    report_path = os.path.join(folder_path, "report.md")
-    write_file(report_path, report)
+    write_file(os.path.join(folder_path, "report.md"), render_report_md(record))
+    write_file(
+        os.path.join(folder_path, "run.json"),
+        json.dumps(record, indent=2, ensure_ascii=False, sort_keys=False),
+    )
+    for filename, content in artifacts.items():
+        write_file(os.path.join(folder_path, filename), content or "")
 
     return folder_path
 

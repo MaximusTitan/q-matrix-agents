@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { AttemptRecord, CheckResult, EscalationData, RunFormValues, StartRunOptions } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { DoctorTrail } from "./shared/doctor-trail";
+import { doctorStepsFromAgents } from "@/lib/doctor-trail";
 
 interface EscalationPanelProps {
   form: RunFormValues;
@@ -91,16 +93,16 @@ function FailureDetails({
 }) {
   const [open, setOpen] = useState(true); // open by default — user needs this context
 
-  // Pull eval results from each attempt's Eval agent output
+  // Pull eval results + the doctor trail from each attempt's agent list.
   const attemptReports = attempts
     .filter((a) => a && a.agents)
     .map((a) => {
       const evalAgent = a.agents.find((ag) => ag.name === "Eval" && ag.output);
       const c1 = evalAgent?.output?.check1 as CheckResult | undefined;
       const c2 = evalAgent?.output?.check2 as CheckResult | undefined;
-      return { attempt: a.attempt, c1, c2 };
+      return { attempt: a.attempt, c1, c2, doctorSteps: doctorStepsFromAgents(a.agents) };
     })
-    .filter(({ c1, c2 }) => c1 !== undefined || c2 !== undefined);
+    .filter(({ c1, c2, doctorSteps }) => c1 !== undefined || c2 !== undefined || doctorSteps.length > 0);
 
   const hasContent = escalation.error || attemptReports.length > 0;
   if (!hasContent) return null;
@@ -126,8 +128,8 @@ function FailureDetails({
             <p className="text-[11px] text-[var(--qm-red)]">{escalation.error}</p>
           )}
 
-          {attemptReports.map(({ attempt, c1, c2 }) => (
-            <div key={attempt}>
+          {attemptReports.map(({ attempt, c1, c2, doctorSteps }) => (
+            <div key={attempt} className="space-y-3">
               <div className="mb-2 flex items-center gap-2">
                 <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
                   Cycle {attempt}
@@ -143,6 +145,7 @@ function FailureDetails({
                 <CheckBlock title="Check 1 — Universal Rules" check={c1} />
                 <CheckBlock title="Check 2 — CSM Coverage" check={c2} />
               </div>
+              <DoctorTrail steps={doctorSteps} />
             </div>
           ))}
         </div>

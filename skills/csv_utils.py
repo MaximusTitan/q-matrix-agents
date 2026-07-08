@@ -52,6 +52,30 @@ CONCEPT_SKILL_ROWS_TOOL = {
     },
 }
 
+# Shared tool schema for Check 1 (universal-rules compliance). Forcing a tool call
+# instead of hand-formatted JSON means a stray quote/apostrophe inside a feedback
+# string can never break parsing — the recurring failure mode when Check 1 used
+# free-text JSON.
+RULES_CHECK_TOOL = {
+    "name": "submit_rules_check",
+    "description": "Submit the universal-rules compliance verdict for this CSV.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "passed": {
+                "type": "boolean",
+                "description": "True only if the CSV has zero rule violations.",
+            },
+            "feedback": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "One entry per violation found. Empty if passed is true.",
+            },
+        },
+        "required": ["passed", "feedback"],
+    },
+}
+
 
 def parse_csv(raw_text: str) -> list[dict]:
     """
