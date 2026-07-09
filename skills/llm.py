@@ -1,7 +1,7 @@
 """
 skills/llm.py
 
-Thin wrapper around the Anthropic API.
+Thin wrapper around Claude via the Vercel AI Gateway.
 All agents call LLMs through this single function.
 Model, token limits, and retry logic are configured here — not in agent code.
 """
@@ -13,9 +13,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+_client = anthropic.Anthropic(
+    api_key=os.getenv("AI_GATEWAY_API_KEY"),
+    base_url="https://ai-gateway.vercel.sh",
+)
 
-MODEL         = "claude-sonnet-4-6"
+MODEL         = "anthropic/claude-sonnet-4-6"
 MAX_TOKENS    = 8096
 MAX_RETRIES   = 3
 RETRY_DELAY   = 5  # seconds
