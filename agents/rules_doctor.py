@@ -27,8 +27,7 @@ Skills used:
 
 import json
 import os
-from skills.llm import call_llm_structured, add_usage
-from skills.pricing import cost_usd
+from skills.llm import call_llm_structured, add_usage, DEFAULT_MODEL
 from skills.csv_utils import CONCEPT_SKILL_ROWS_TOOL, rows_from_pairs, validate_rows, csv_to_text
 
 _PROMPT_PATH = os.path.join(
@@ -71,6 +70,7 @@ def run(
     subject: str,
     grade: str,
     chapter: str,
+    model: str = DEFAULT_MODEL,
 ) -> dict:
     """
     Surgically patch a CSV that passed Check 2 but failed Check 1 (universal rules).
@@ -126,12 +126,14 @@ skills:
     correction = ""
     last_error = None
     usage_total = {}
+    cost_total = 0.0
     for attempt in range(2):
         print(f"[rules_doctor] Calling LLM (attempt {attempt + 1}/2)...")
-        result, usage = call_llm_structured(
-            SYSTEM_PROMPT, base_user_content + correction, CONCEPT_SKILL_ROWS_TOOL
+        result, usage, cost = call_llm_structured(
+            SYSTEM_PROMPT, base_user_content + correction, CONCEPT_SKILL_ROWS_TOOL, model=model
         )
         usage_total = add_usage(usage_total, usage)
+        cost_total += cost
         rows = rows_from_pairs(board, subject, grade, chapter, result.get("rows", []))
 
         try:
@@ -154,11 +156,11 @@ skills:
         print(f"[rules_doctor] Doctored CSV produced ({len(rows)} rows)")
         return {
             "csv": csv_to_text(rows), "rows": rows,
-            "usage": usage_total, "cost_usd": cost_usd(usage_total),
+            "usage": usage_total, "cost_usd": cost_total,
         }
 
     print("[rules_doctor] Doctoring failed — rows invalid after retry")
     return {
         "csv": None, "error": last_error,
-        "usage": usage_total, "cost_usd": cost_usd(usage_total),
+        "usage": usage_total, "cost_usd": cost_total,
     }

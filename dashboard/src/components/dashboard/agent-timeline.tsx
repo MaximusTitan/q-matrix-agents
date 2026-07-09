@@ -724,7 +724,11 @@ function MapExtractionCard({ agent }: { agent: AgentRecord }) {
         <div className="flex-1 text-xs font-bold" style={{ color }}>
           {agent.name}
         </div>
-        <UsageBadge usage={out?.usage as Usage | undefined} costUsd={out?.cost_usd as number | undefined} />
+        <UsageBadge
+          usage={out?.usage as Usage | undefined}
+          costUsd={out?.cost_usd as number | undefined}
+          model={out?.model as string | undefined}
+        />
         {agent.status === "running" ? (
           <span className="text-[10px] font-bold text-[var(--qm-amber)]">
             <span className="inline-block animate-spin">⟳</span> RUNNING
@@ -809,7 +813,11 @@ function EvalCard({ agent }: { agent: AgentRecord }) {
         <div className="flex-1 text-xs font-bold" style={{ color }}>
           {agent.name}
         </div>
-        <UsageBadge usage={out?.usage as Usage | undefined} costUsd={out?.cost_usd as number | undefined} />
+        <UsageBadge
+          usage={out?.usage as Usage | undefined}
+          costUsd={out?.cost_usd as number | undefined}
+          model={out?.model as string | undefined}
+        />
         {agent.status === "running" ? (
           <span className="text-[10px] font-bold text-[var(--qm-amber)]">
             <span className="inline-block animate-spin">⟳</span> RUNNING
@@ -950,7 +958,11 @@ function DoctorCard({ agent }: { agent: AgentRecord }) {
         <div className="flex-1 text-xs font-bold" style={{ color }}>
           {agent.name}
         </div>
-        <UsageBadge usage={out?.usage as Usage | undefined} costUsd={out?.cost_usd as number | undefined} />
+        <UsageBadge
+          usage={out?.usage as Usage | undefined}
+          costUsd={out?.cost_usd as number | undefined}
+          model={out?.model as string | undefined}
+        />
         {agent.status === "running" ? (
           <span className="text-[10px] font-bold text-[var(--qm-amber)]">
             <span className="inline-block animate-spin">⟳</span> RUNNING
@@ -1055,7 +1067,11 @@ function JudgeCard({ agent }: { agent: AgentRecord }) {
         <div className="flex-1 text-xs font-bold" style={{ color }}>
           {agent.name}
         </div>
-        <UsageBadge usage={out?.usage as Usage | undefined} costUsd={out?.cost_usd as number | undefined} />
+        <UsageBadge
+          usage={out?.usage as Usage | undefined}
+          costUsd={out?.cost_usd as number | undefined}
+          model={out?.model as string | undefined}
+        />
         {agent.status === "running" ? (
           <span className="text-[10px] font-bold text-[var(--qm-amber)]">
             <span className="inline-block animate-spin">⟳</span> RUNNING
@@ -1189,7 +1205,11 @@ function AgentCard({ agent }: { agent: AgentRecord }) {
         <div className="flex-1 text-xs font-bold" style={{ color }}>
           {agent.name}
         </div>
-        <UsageBadge usage={out?.usage as Usage | undefined} costUsd={out?.cost_usd as number | undefined} />
+        <UsageBadge
+          usage={out?.usage as Usage | undefined}
+          costUsd={out?.cost_usd as number | undefined}
+          model={out?.model as string | undefined}
+        />
         {agent.status === "running" ? (
           <span className="text-[10px] font-bold text-[var(--qm-amber)]">
             <span className="inline-block animate-spin">⟳</span> RUNNING

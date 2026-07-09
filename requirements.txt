@@ -1,4 +1,4 @@
-anthropic
+openai
 pdfplumber
 python-dotenv
 fastapi

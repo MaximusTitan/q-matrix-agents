@@ -18,8 +18,7 @@ Skills used:
 
 import json
 import os
-from skills.llm import call_llm, add_usage
-from skills.pricing import cost_usd
+from skills.llm import call_llm, add_usage, DEFAULT_MODEL
 
 _PROMPT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -44,10 +43,10 @@ def _parse_llm_json(raw: str) -> dict | None:
         return None
 
 
-def _fallback_choice(candidates: list[dict], reason: str, usage: dict) -> dict:
+def _fallback_choice(candidates: list[dict], reason: str, usage: dict, cost_usd: float) -> dict:
     """Deterministic pick when the LLM output is unusable: prefer a generated
-    candidate, else the earliest by cycle. `usage` still reflects whatever tokens
-    were spent by the LLM attempts before falling back."""
+    candidate, else the earliest by cycle. `usage`/`cost_usd` still reflect whatever
+    was spent by the LLM attempts before falling back."""
     generated = [c for c in candidates if c.get("source") == "generated"]
     pool = generated or candidates
     chosen = min(pool, key=lambda c: c.get("cycle", 0))
@@ -65,7 +64,7 @@ def _fallback_choice(candidates: list[dict], reason: str, usage: dict) -> dict:
             for c in candidates
         ],
         "usage": usage,
-        "cost_usd": cost_usd(usage),
+        "cost_usd": cost_usd,
     }
 
 
@@ -77,6 +76,7 @@ def run(
     subject: str,
     grade: str,
     chapter: str,
+    model: str = DEFAULT_MODEL,
 ) -> dict:
     """
     Choose the best CSV among already-passing candidates.
@@ -130,9 +130,11 @@ skills:
 
     result = None
     usage_total = {}
+    cost_total = 0.0
     for attempt in range(2):
-        raw, usage = call_llm(SYSTEM_PROMPT, user_content)
+        raw, usage, cost = call_llm(SYSTEM_PROMPT, user_content, model=model)
         usage_total = add_usage(usage_total, usage)
+        cost_total += cost
         result = _parse_llm_json(raw)
         if result is not None and result.get("chosen_id") in valid_ids:
             break
@@ -141,9 +143,9 @@ skills:
 
     if result is None:
         print("[judge] LLM output unusable after retry — falling back deterministically")
-        return _fallback_choice(candidates, "judge output unparseable", usage_total)
+        return _fallback_choice(candidates, "judge output unparseable", usage_total, cost_total)
 
     result["usage"] = usage_total
-    result["cost_usd"] = cost_usd(usage_total)
+    result["cost_usd"] = cost_total
     print(f"[judge] Chose {result['chosen_id']}")
     return result

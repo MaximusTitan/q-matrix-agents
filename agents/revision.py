@@ -12,14 +12,14 @@ failed_check can be "check1", "check2", or "both" since both checks
 run in parallel and may fail simultaneously.
 
 Input:  current_prompt, feedback, failed_check, mode, human_feedback (optional)
-Output: (revised_prompt, usage)
+Output: (revised_prompt, usage, cost_usd)
 
 Skills used:
     llm — call_llm
 """
 
 import os
-from skills.llm import call_llm
+from skills.llm import call_llm, DEFAULT_MODEL
 
 _PROMPT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -36,7 +36,8 @@ def run(
     failed_check: str,
     mode: str,
     human_feedback: str = None,
-) -> tuple[str, dict]:
+    model: str = DEFAULT_MODEL,
+) -> tuple[str, dict, float]:
     """
     Rewrite a generation prompt based on eval feedback.
 
@@ -49,8 +50,8 @@ def run(
         human_feedback: Optional additional guidance from a human reviewer.
 
     Returns:
-        (revised_prompt, usage) — the revised prompt as a plain string, and the
-        token usage dict for the LLM call.
+        (revised_prompt, usage, cost_usd) — the revised prompt as a plain string, the
+        token usage dict, and the Gateway-computed USD cost for the LLM call.
 
     Raises:
         ValueError: If mode or failed_check are invalid.
@@ -78,6 +79,6 @@ def run(
 4. feedback:
 {feedback_text}{human_section}"""
 
-    revised, usage = call_llm(SYSTEM_PROMPT, user_content)
+    revised, usage, cost_usd = call_llm(SYSTEM_PROMPT, user_content, model=model)
     print(f"[revision] Revised prompt generated ({len(revised)} chars)")
-    return revised.strip(), usage
+    return revised.strip(), usage, cost_usd

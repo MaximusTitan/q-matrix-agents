@@ -64,7 +64,7 @@ export function usePipeline({ onRunComplete }: UsePipelineOptions = {}) {
     async (options: StartRunOptions) => {
       const {
         board, subject, grade, chapter,
-        humanFeedback, mapGuidance, rejectReason, curriculumCsv,
+        humanFeedback, mapGuidance, rejectReason, curriculumCsv, models,
       } = options;
 
       // The "provide CSV" path derives identifiers server-side, so the KB fields are
@@ -83,11 +83,11 @@ export function usePipeline({ onRunComplete }: UsePipelineOptions = {}) {
       });
 
       try {
-        const base = { board, subject, grade, chapter, no_sync: true };
+        const base = { board, subject, grade, chapter, no_sync: true, models };
         let result: { run_id: string };
 
         if (curriculumCsv) {
-          result = await postRunPrerequisiteOnly({ csv_text: curriculumCsv });
+          result = await postRunPrerequisiteOnly({ csv_text: curriculumCsv, models });
         } else if (humanFeedback) {
           result = await postRun({ ...base, human_feedback: humanFeedback });
         } else if (mapGuidance) {

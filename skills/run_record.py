@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 
 from skills.llm import add_usage
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _ZERO_USAGE = {
     "input_tokens": 0, "output_tokens": 0,
@@ -96,12 +96,12 @@ class RunRecordBuilder:
     # ── Accumulation ──────────────────────────────────────────────────────────
 
     def add_attempt(self, *, attempt, input_type, prompt, gen_csv, gen_rows,
-                    check1, check2, usage=None, cost_usd=0.0) -> None:
+                    check1, check2, usage=None, cost_usd=0.0, model=None) -> None:
         """Record a generator attempt and its eval checks.
 
-        ``usage``/``cost_usd`` are the Generator's OWN call — Eval's usage already
-        rides through inside ``check1``/``check2`` (see agents/eval.py), so it needs
-        no separate plumbing here.
+        ``usage``/``cost_usd``/``model`` are the Generator's OWN call — Eval's usage
+        already rides through inside ``check1``/``check2`` (see agents/eval.py), so it
+        needs no separate plumbing here.
         """
         self._attempts[attempt] = {
             "attempt": attempt,
@@ -115,6 +115,7 @@ class RunRecordBuilder:
                 "passed": bool(check1.get("passed") and check2.get("passed")),
                 "usage": usage or dict(_ZERO_USAGE),
                 "cost_usd": cost_usd,
+                "model": model,
             },
             "doctors": [],
             "revision": None,
@@ -123,13 +124,13 @@ class RunRecordBuilder:
     def add_doctor(self, *, attempt, kind, gaps_addressed, csv, error,
                    reeval_check1, reeval_check2, passed,
                    regressed, regressed_concepts, regressed_skills,
-                   chained_from=None, usage=None, cost_usd=0.0) -> None:
+                   chained_from=None, usage=None, cost_usd=0.0, model=None) -> None:
         """Record one doctor pass (coverage or rules) for an attempt.
 
         Safe to call for a doctor that errored or produced an invalid CSV — pass
         ``csv=None`` and an ``error`` string; ``reeval_*`` may be None. ``usage``/
-        ``cost_usd`` are the doctor's own corrective LLM call — the reeval's usage
-        rides through inside ``reeval_check1``/``reeval_check2`` already.
+        ``cost_usd``/``model`` are the doctor's own corrective LLM call — the reeval's
+        usage rides through inside ``reeval_check1``/``reeval_check2`` already.
         """
         # A doctor can, in principle, fire before its attempt was recorded (defensive);
         # create a stub so the entry is never dropped.
@@ -157,9 +158,10 @@ class RunRecordBuilder:
             "regressed_skills": regressed_skills or [],
             "usage": usage or dict(_ZERO_USAGE),
             "cost_usd": cost_usd,
+            "model": model,
         })
 
-    def add_revision(self, *, attempt, usage, cost_usd) -> None:
+    def add_revision(self, *, attempt, usage, cost_usd, model=None) -> None:
         """Record the Revision agent's LLM usage for an attempt."""
         entry = self._attempts.setdefault(attempt, {
             "attempt": attempt,
@@ -169,21 +171,25 @@ class RunRecordBuilder:
             "doctors": [],
             "revision": None,
         })
-        entry["revision"] = {"usage": usage or dict(_ZERO_USAGE), "cost_usd": cost_usd}
+        entry["revision"] = {
+            "usage": usage or dict(_ZERO_USAGE), "cost_usd": cost_usd, "model": model,
+        }
 
-    def add_pipeline_usage(self, agent: str, usage: dict, cost_usd: float) -> None:
+    def add_pipeline_usage(self, agent: str, usage: dict, cost_usd: float, model=None) -> None:
         """Record usage for a pipeline-level agent that runs outside any attempt
         (Map Extraction, Prerequisite mapping)."""
-        self._pipeline_agents[agent] = {"usage": usage or dict(_ZERO_USAGE), "cost_usd": cost_usd}
+        self._pipeline_agents[agent] = {
+            "usage": usage or dict(_ZERO_USAGE), "cost_usd": cost_usd, "model": model,
+        }
 
     def set_judge(self, *, selected_by, candidate_count, chosen_id, rationale,
-                  candidates, usage=None, cost_usd=0.0) -> None:
+                  candidates, usage=None, cost_usd=0.0, model=None) -> None:
         """Record how the final CSV was selected among passing candidates.
 
         ``candidates`` is a list of dicts each carrying at least ``id``, ``source``
         and ``cycle``; ``build()`` swaps any inline ``csv`` text for a ``csv_file``
-        pointer. ``usage``/``cost_usd`` are zero when a single candidate was chosen
-        without invoking the Judge agent.
+        pointer. ``usage``/``cost_usd``/``model`` are zero/None when a single candidate
+        was chosen without invoking the Judge agent.
         """
         self._judge = {
             "selected_by": selected_by,
@@ -193,6 +199,7 @@ class RunRecordBuilder:
             "candidates": candidates or [],
             "usage": usage or dict(_ZERO_USAGE),
             "cost_usd": cost_usd,
+            "model": model,
         }
 
     def finalize(self, *, final_status, failed_check, final_csv, final_csv_name,
@@ -237,6 +244,7 @@ class RunRecordBuilder:
                     "passed": gen.get("passed", False),
                     "usage": gen.get("usage") or dict(_ZERO_USAGE),
                     "cost_usd": gen.get("cost_usd", 0.0),
+                    "model": gen.get("model"),
                 }
                 attempt_usage = add_usage(attempt_usage, gen_out["usage"])
                 attempt_usage = add_usage(attempt_usage, (gen.get("check1") or {}).get("usage") or {})
@@ -270,6 +278,7 @@ class RunRecordBuilder:
                     "regressed_skills": d.get("regressed_skills", []),
                     "usage": d_usage,
                     "cost_usd": d_cost,
+                    "model": d.get("model"),
                 })
                 attempt_usage = add_usage(attempt_usage, d_usage)
                 attempt_cost_usd += d_cost
@@ -324,6 +333,7 @@ class RunRecordBuilder:
                 "candidates": candidates_out,
                 "usage": self._judge.get("usage") or dict(_ZERO_USAGE),
                 "cost_usd": self._judge.get("cost_usd", 0.0),
+                "model": self._judge.get("model"),
             }
 
         final = self._final or {

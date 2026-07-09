@@ -23,8 +23,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from skills.kb_access import load_rules, load_concept_skill_map
-from skills.llm import call_llm_structured, add_usage
-from skills.pricing import cost_usd
+from skills.llm import call_llm_structured, add_usage, DEFAULT_MODEL
 from skills.csv_utils import RULES_CHECK_TOOL
 from skills.diff import diff_full
 
@@ -37,7 +36,7 @@ with open(_PROMPT_PATH, "r", encoding="utf-8") as f:
     SYSTEM_PROMPT = f.read()
 
 
-def run_check1(csv: str, board: str, subject: str, grade: str) -> dict:
+def run_check1(csv: str, board: str, subject: str, grade: str, model: str = DEFAULT_MODEL) -> dict:
     """
     Check 1 — Universal rules compliance.
 
@@ -55,16 +54,18 @@ def run_check1(csv: str, board: str, subject: str, grade: str) -> dict:
 --- GENERATED CSV ---
 {csv}"""
 
-    result, usage = call_llm_structured(SYSTEM_PROMPT, user_content, RULES_CHECK_TOOL)
+    result, usage, cost_usd = call_llm_structured(SYSTEM_PROMPT, user_content, RULES_CHECK_TOOL, model=model)
 
     passed   = result.get("passed", False)
     feedback = result.get("feedback", [])
 
     print(f"[eval] Check 1: {'PASSED' if passed else 'FAILED'} ({len(feedback)} issue(s))")
-    return {"passed": passed, "feedback": feedback, "usage": usage, "cost_usd": cost_usd(usage)}
+    return {"passed": passed, "feedback": feedback, "usage": usage, "cost_usd": cost_usd}
 
 
-def run_check2(csv: str, board: str, subject: str, grade: str, chapter: str) -> dict:
+def run_check2(
+    csv: str, board: str, subject: str, grade: str, chapter: str, model: str = DEFAULT_MODEL
+) -> dict:
     """
     Check 2 — Concept-skill-map coverage.
 
@@ -74,7 +75,7 @@ def run_check2(csv: str, board: str, subject: str, grade: str, chapter: str) -> 
     """
     print(f"[eval] Running Check 2 — CSM coverage")
     concept_skill_map = load_concept_skill_map(board, subject, grade, chapter)
-    result = diff_full(csv, concept_skill_map)
+    result = diff_full(csv, concept_skill_map, model=model)
 
     print(f"[eval] Check 2: {'PASSED' if result['passed'] else 'FAILED'} "
           f"({len(result['missing_concepts'])} missing concepts, "
@@ -88,6 +89,7 @@ def run(
     subject: str,
     grade: str,
     chapter: str,
+    model: str = DEFAULT_MODEL,
 ) -> dict:
     """
     Run Check 1 and Check 2 in parallel.
@@ -103,8 +105,8 @@ def run(
     print(f"[eval] Running Check 1 and Check 2 in parallel...")
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        future_c1 = executor.submit(run_check1, csv, board, subject, grade)
-        future_c2 = executor.submit(run_check2, csv, board, subject, grade, chapter)
+        future_c1 = executor.submit(run_check1, csv, board, subject, grade, model)
+        future_c2 = executor.submit(run_check2, csv, board, subject, grade, chapter, model)
 
         check1 = future_c1.result()
         check2 = future_c2.result()
@@ -113,10 +115,11 @@ def run(
     print(f"[eval] Overall: {'✓ PASSED' if passed else '✗ FAILED'}")
 
     usage = add_usage(check1.get("usage") or {}, check2.get("usage") or {})
+    cost_total = check1.get("cost_usd", 0.0) + check2.get("cost_usd", 0.0)
     return {
         "check1": check1,
         "check2": check2,
         "passed": passed,
         "usage": usage,
-        "cost_usd": cost_usd(usage),
+        "cost_usd": cost_total,
     }

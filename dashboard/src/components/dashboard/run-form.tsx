@@ -12,8 +12,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { fetchKbBoards, fetchKbSubjects, fetchKbGrades, fetchKbChapters } from "@/lib/api";
-import type { RunFormValues, StartRunOptions } from "@/lib/types";
+import { fetchModels } from "@/lib/models";
+import { AgentModelPicker } from "./model-select";
+import { AGENT_KEYS, type AgentKey, type ModelInfo, type RunFormValues, type StartRunOptions } from "@/lib/types";
+
+// Keep in sync with skills/llm.py::DEFAULT_MODEL.
+const DEFAULT_MODEL = "openai/gpt-5.4-mini";
 
 interface RunFormProps {
   form: RunFormValues;
@@ -86,6 +92,68 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
   // "generate" = full pipeline from the KB; "csv" = skip Stage 1, paste/upload a CSV.
   const [mode, setMode] = useState<"generate" | "csv">("generate");
   const [csvText, setCsvText] = useState("");
+
+  // Per-agent model overrides (advanced, collapsed by default). Omitted keys fall
+  // back to DEFAULT_MODEL server-side — see StartRunOptions.models.
+  const [modelsOpen, setModelsOpen] = useState(false);
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
+  const [modelOverrides, setModelOverrides] = useState<Partial<Record<AgentKey, string>>>({});
+
+  useEffect(() => {
+    if (modelsOpen && availableModels.length === 0) {
+      fetchModels().then(setAvailableModels).catch(() => setAvailableModels([]));
+    }
+  }, [modelsOpen, availableModels.length]);
+
+  const modelsForStart = Object.keys(modelOverrides).length > 0 ? modelOverrides : undefined;
+
+  const setAgentModel = (agentKey: AgentKey, modelId: string | undefined) => {
+    setModelOverrides((prev) => {
+      const next = { ...prev };
+      if (modelId) next[agentKey] = modelId;
+      else delete next[agentKey];
+      return next;
+    });
+  };
+
+  const modelsSection = (
+    <div className="space-y-2 rounded-md border border-border">
+      <button
+        onClick={() => setModelsOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[10px] font-bold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+      >
+        {modelsOpen ? (
+          <ChevronDown className="h-3 w-3" />
+        ) : (
+          <ChevronRight className="h-3 w-3" />
+        )}
+        Advanced: Models
+        {Object.keys(modelOverrides).length > 0 && (
+          <span className="ml-auto rounded bg-secondary px-1.5 py-0.5 text-[9px] font-bold normal-case text-foreground">
+            {Object.keys(modelOverrides).length} customized
+          </span>
+        )}
+      </button>
+      {modelsOpen && (
+        <div className="space-y-2 px-2 pb-2">
+          {availableModels.length === 0 ? (
+            <p className="text-[10px] text-muted-foreground">Loading model catalog…</p>
+          ) : (
+            AGENT_KEYS.map((agentKey) => (
+              <AgentModelPicker
+                key={agentKey}
+                agentKey={agentKey}
+                models={availableModels}
+                value={modelOverrides[agentKey]}
+                defaultModel={DEFAULT_MODEL}
+                onChange={(modelId) => setAgentModel(agentKey, modelId)}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
 
   const handleCsvFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -225,11 +293,13 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
             onChange={handleChapterChange}
           />
 
+          {modelsSection}
+
           <div className="flex gap-2">
             <Button
               className="flex-1 text-xs font-bold"
               disabled={!canRun}
-              onClick={() => onStart(form)}
+              onClick={() => onStart({ ...form, models: modelsForStart })}
             >
               ▶ Run Pipeline
             </Button>
@@ -275,7 +345,7 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
           <Button
             className="w-full text-xs font-bold"
             disabled={!canRunCsv}
-            onClick={() => onStart({ ...form, curriculumCsv: csvText })}
+            onClick={() => onStart({ ...form, curriculumCsv: csvText, models: modelsForStart })}
           >
             ▶ Run Prerequisite Mapping
           </Button>

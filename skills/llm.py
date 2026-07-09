@@ -1,24 +1,31 @@
 """
 skills/llm.py
 
-Thin wrapper around Claude via the Vercel AI Gateway.
-All agents call LLMs through this single function.
-Model, token limits, and retry logic are configured here — not in agent code.
+Thin wrapper around the Vercel AI Gateway's OpenAI Chat Completions-compatible
+endpoint. This shape (rather than the Anthropic Messages-compatible endpoint) is what
+lets a single client talk to any provider the Gateway exposes — Anthropic, OpenAI,
+Google, Meta, Mistral, DeepSeek, etc. — with forced tool-choice working identically
+across all of them, confirmed against the live endpoint.
+
+All agents call LLMs through this single function. Retry logic is configured here —
+not in agent code. Model choice is per-call (see `model=`) so each agent can be
+pointed at a different model/provider; DEFAULT_MODEL is only the fallback.
 """
 
+import json
 import os
 import time
-import anthropic
+import openai
 from dotenv import load_dotenv
 
 load_dotenv()
 
-_client = anthropic.Anthropic(
+_client = openai.OpenAI(
     api_key=os.getenv("AI_GATEWAY_API_KEY"),
-    base_url="https://ai-gateway.vercel.sh",
+    base_url="https://ai-gateway.vercel.sh/v1",
 )
 
-MODEL         = "anthropic/claude-sonnet-4-6"
+DEFAULT_MODEL = "openai/gpt-5.4-mini"
 MAX_TOKENS    = 8096
 MAX_RETRIES   = 3
 RETRY_DELAY   = 5  # seconds
@@ -29,10 +36,25 @@ _USAGE_FIELDS = (
 )
 
 
-def _usage_from_response(response) -> dict:
-    """Extract token usage from a Message response as a plain dict."""
+def _usage_from_response(response) -> tuple[dict, float]:
+    """Extract (usage, cost_usd) from a ChatCompletion response.
+
+    The Gateway augments the standard OpenAI `usage` object with its own
+    Anthropic-style cache fields and a pre-computed `cost` — already priced for
+    whichever provider actually served the request, so no local price table is
+    needed for any model.
+    """
     usage = response.usage
-    return {field: getattr(usage, field, 0) or 0 for field in _USAGE_FIELDS}
+    cached = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
+    return (
+        {
+            "input_tokens": usage.prompt_tokens,
+            "output_tokens": usage.completion_tokens,
+            "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            "cache_read_input_tokens": cached,
+        },
+        float(getattr(usage, "cost", 0) or 0),
+    )
 
 
 def add_usage(a: dict, b: dict) -> dict:
@@ -48,19 +70,19 @@ def _with_retries(make_request):
         try:
             return make_request()
 
-        except anthropic.RateLimitError as e:
+        except openai.RateLimitError as e:
             last_error = e
             print(f"[llm] Rate limit hit (attempt {attempt}/{MAX_RETRIES}). "
                   f"Retrying in {RETRY_DELAY}s...")
             time.sleep(RETRY_DELAY)
 
-        except anthropic.InternalServerError as e:
+        except openai.InternalServerError as e:
             last_error = e
             print(f"[llm] Server error (attempt {attempt}/{MAX_RETRIES}). "
                   f"Retrying in {RETRY_DELAY}s...")
             time.sleep(RETRY_DELAY)
 
-        except anthropic.APIError:
+        except openai.APIError:
             # Non-retryable — surface immediately
             raise
 
@@ -69,42 +91,48 @@ def _with_retries(make_request):
     )
 
 
-def call_llm(system_prompt: str, user_content: str) -> tuple[str, dict]:
+def call_llm(system_prompt: str, user_content: str, model: str = DEFAULT_MODEL) -> tuple[str, dict, float]:
     """
-    Call the Anthropic API with a system prompt and user content.
+    Call an LLM through the Gateway with a system prompt and user content.
     Retries up to MAX_RETRIES times on transient errors.
 
     Args:
         system_prompt: The agent's system-level instructions.
         user_content:  The content the agent should act on.
+        model:         Gateway model id, e.g. "anthropic/claude-sonnet-4-6",
+                       "openai/gpt-5-mini", "google/gemini-2.5-flash".
 
     Returns:
-        (text, usage) — the model's response as a plain string, and a dict with
-        input_tokens/output_tokens/cache_creation_input_tokens/cache_read_input_tokens.
+        (text, usage, cost_usd) — the model's response as a plain string, a dict with
+        input_tokens/output_tokens/cache_creation_input_tokens/cache_read_input_tokens,
+        and the Gateway-computed USD cost of this call.
 
     Raises:
         RuntimeError: If all retries are exhausted.
-        anthropic.APIError: On non-retryable API errors.
+        openai.APIError: On non-retryable API errors.
     """
     def make_request():
-        response = _client.messages.create(
-            model=MODEL,
+        response = _client.chat.completions.create(
+            model=model,
             max_tokens=MAX_TOKENS,
-            system=system_prompt,
             messages=[
-                {"role": "user", "content": user_content}
-            ]
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
         )
-        return response.content[0].text, _usage_from_response(response)
+        usage, cost_usd = _usage_from_response(response)
+        return response.choices[0].message.content, usage, cost_usd
 
     return _with_retries(make_request)
 
 
-def call_llm_structured(system_prompt: str, user_content: str, tool: dict) -> tuple[dict, dict]:
+def call_llm_structured(
+    system_prompt: str, user_content: str, tool: dict, model: str = DEFAULT_MODEL
+) -> tuple[dict, dict, float]:
     """
-    Call the Anthropic API with a single tool and force the model to call it, so the
-    response is schema-shaped JSON instead of hand-formatted text the model has to
-    escape/delimit itself (e.g. raw CSV, where a stray unescaped comma silently
+    Call an LLM through the Gateway with a single tool and force the model to call it,
+    so the response is schema-shaped JSON instead of hand-formatted text the model has
+    to escape/delimit itself (e.g. raw CSV, where a stray unescaped comma silently
     corrupts the row). Retries up to MAX_RETRIES times on transient errors.
 
     Args:
@@ -112,34 +140,42 @@ def call_llm_structured(system_prompt: str, user_content: str, tool: dict) -> tu
         user_content:  The content the agent should act on.
         tool:          A single tool definition (name, description, input_schema).
                        The model is forced to call exactly this tool.
+        model:         Gateway model id. Must support tool use (the Gateway's model
+                       catalog tags these "tool-use").
 
     Returns:
-        (result, usage) — the tool call's input as a dict (shape matches
-        tool["input_schema"]), and a dict with input_tokens/output_tokens/
-        cache_creation_input_tokens/cache_read_input_tokens.
+        (result, usage, cost_usd) — the tool call's input as a dict (shape matches
+        tool["input_schema"]), the token-usage dict, and the Gateway-computed USD cost.
 
     Raises:
-        RuntimeError: If all retries are exhausted, or the response has no tool_use
-                      block (forcing tool_choice makes this exceedingly unlikely).
-        anthropic.APIError: On non-retryable API errors.
+        RuntimeError: If all retries are exhausted, or the response has no tool call
+                      (forcing tool_choice makes this exceedingly unlikely).
+        openai.APIError: On non-retryable API errors.
     """
     def make_request():
-        response = _client.messages.create(
-            model=MODEL,
+        response = _client.chat.completions.create(
+            model=model,
             max_tokens=MAX_TOKENS,
-            system=system_prompt,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": tool["name"]},
             messages=[
-                {"role": "user", "content": user_content}
-            ]
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            tools=[{
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool["input_schema"],
+                },
+            }],
+            tool_choice={"type": "function", "function": {"name": tool["name"]}},
         )
-        usage = _usage_from_response(response)
-        for block in response.content:
-            if block.type == "tool_use":
-                return block.input, usage
-        raise RuntimeError(
-            f"Model response had no tool_use block (stop_reason={response.stop_reason})."
-        )
+        usage, cost_usd = _usage_from_response(response)
+        tool_calls = response.choices[0].message.tool_calls
+        if not tool_calls:
+            raise RuntimeError(
+                f"Model response had no tool call (finish_reason={response.choices[0].finish_reason})."
+            )
+        return json.loads(tool_calls[0].function.arguments), usage, cost_usd
 
     return _with_retries(make_request)

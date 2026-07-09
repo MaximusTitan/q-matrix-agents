@@ -31,8 +31,7 @@ Coverage runs in two passes:
 import json
 import re
 from skills.csv_utils import parse_csv
-from skills.llm import call_llm, add_usage
-from skills.pricing import cost_usd
+from skills.llm import call_llm, add_usage, DEFAULT_MODEL
 
 
 SYSTEM_PROMPT = """You are a curriculum coverage auditor.
@@ -185,6 +184,7 @@ def _reconcile(
     missing_skills: list,
     extra_concepts: list,
     extra_skills: list,
+    model: str = DEFAULT_MODEL,
 ) -> dict:
     """
     Second pass — re-check every still-missing item against the FULL pool of
@@ -239,6 +239,7 @@ def _reconcile(
         "now_covered_skills": {},
         "detail": {"concepts": {}, "skills": {}},
         "usage": {},
+        "cost_usd": 0.0,
     }
 
     # Only worth a call if some missing item has a same-kind pool to match against.
@@ -263,7 +264,7 @@ def _reconcile(
         + json.dumps({"concepts": concept_cands, "skills": skill_cands}, indent=2)
     )
 
-    raw, usage = call_llm(RECONCILE_PROMPT, user_content)
+    raw, usage, cost_usd = call_llm(RECONCILE_PROMPT, user_content, model=model)
     try:
         result = json.loads(_strip_fences(raw))
     except json.JSONDecodeError:
@@ -276,6 +277,7 @@ def _reconcile(
                 "skills":   build_detail(missing_skills,   skill_cands,   extra_skills,   {}),
             },
             "usage": usage,
+            "cost_usd": cost_usd,
         }
 
     now_covered_concepts = _normalize_matched(result.get("now_covered_concepts", {}))
@@ -289,10 +291,11 @@ def _reconcile(
             "skills":   build_detail(missing_skills,   skill_cands,   extra_skills,   now_covered_skills),
         },
         "usage": usage,
+        "cost_usd": cost_usd,
     }
 
 
-def diff_full(raw_csv: str, concept_skill_map: dict) -> dict:
+def diff_full(raw_csv: str, concept_skill_map: dict, model: str = DEFAULT_MODEL) -> dict:
     """
     Semantically diff a generated CSV against a concept-skill-map.
     Uses the LLM to judge coverage rather than exact string matching, then a
@@ -337,7 +340,7 @@ ACTUAL (from generated CSV):
 Concepts: {json.dumps(actual_concepts, indent=2)}
 Skills:   {json.dumps(actual_skills, indent=2)}"""
 
-    raw_response, usage_total = call_llm(SYSTEM_PROMPT, user_content)
+    raw_response, usage_total, cost_total = call_llm(SYSTEM_PROMPT, user_content, model=model)
 
     try:
         result = json.loads(_strip_fences(raw_response))
@@ -354,7 +357,7 @@ Skills:   {json.dumps(actual_skills, indent=2)}"""
             "feedback":         ["Check 2 evaluation failed — LLM returned unparseable output."],
             "reasoning":        "Parse error",
             "usage":            usage_total,
-            "cost_usd":         cost_usd(usage_total),
+            "cost_usd":         cost_total,
         }
 
     missing_concepts  = result.get("missing_concepts",  [])
@@ -370,9 +373,10 @@ Skills:   {json.dumps(actual_skills, indent=2)}"""
     reconciliation = {"concepts": {}, "skills": {}}
 
     if missing_concepts or missing_skills:
-        recon = _reconcile(missing_concepts, missing_skills, extra_concepts, extra_skills)
+        recon = _reconcile(missing_concepts, missing_skills, extra_concepts, extra_skills, model=model)
         reconciliation = recon["detail"]
         usage_total = add_usage(usage_total, recon.get("usage") or {})
+        cost_total += recon.get("cost_usd", 0.0)
 
         for expected, covering in recon["now_covered_concepts"].items():
             if expected in missing_concepts:
@@ -411,5 +415,5 @@ Skills:   {json.dumps(actual_skills, indent=2)}"""
         "feedback":         feedback,
         "reasoning":        reasoning,
         "usage":            usage_total,
-        "cost_usd":         cost_usd(usage_total),
+        "cost_usd":         cost_total,
     }

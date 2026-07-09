@@ -5,6 +5,39 @@ export interface Usage {
   cache_read_input_tokens: number;
 }
 
+// ─── Model selection ────────────────────────────────────────────────────────
+// Mirrors the Gateway's /v1/models catalog (proxied through our backend's GET /models).
+
+export interface ModelPricing {
+  input?: string;
+  output?: string;
+  input_cache_read?: string;
+  input_cache_write?: string;
+}
+
+export interface ModelInfo {
+  id: string; // e.g. "anthropic/claude-sonnet-4-6", "openai/gpt-5-mini"
+  name: string;
+  owned_by: string;
+  context_window: number;
+  tags: string[]; // includes "tool-use" when the model supports forced tool calls
+  pricing: ModelPricing;
+}
+
+// One entry per orchestrator.AGENT_KEYS — keep in sync with orchestrator.py.
+export const AGENT_KEYS = [
+  "map_extraction",
+  "generator",
+  "eval",
+  "doctor",
+  "rules_doctor",
+  "revision",
+  "judge",
+  "prerequisite",
+] as const;
+
+export type AgentKey = (typeof AGENT_KEYS)[number];
+
 export type PipelineStatus = "idle" | "running" | "passed" | "escalated";
 
 // Terminal outcome reported when a run finishes. Extends PipelineStatus with
@@ -220,6 +253,7 @@ export interface DoctorTrailEntry {
   regressed_skills: string[];
   usage?: Usage;
   cost_usd?: number;
+  model?: string | null;
 }
 
 export interface RunGenerator {
@@ -230,6 +264,7 @@ export interface RunGenerator {
   passed: boolean;
   usage?: Usage;
   cost_usd?: number;
+  model?: string | null;
 }
 
 export interface RunAttempt {
@@ -238,7 +273,7 @@ export interface RunAttempt {
   prompt_file: string;
   generator: RunGenerator | null;
   doctors: DoctorTrailEntry[];
-  revision: { usage: Usage; cost_usd: number } | null;
+  revision: { usage: Usage; cost_usd: number; model?: string | null } | null;
   produced_candidate: boolean;
   attempt_usage?: Usage;
   attempt_cost_usd?: number;
@@ -263,11 +298,13 @@ export interface RunJudge {
   candidates: RunJudgeCandidate[];
   usage?: Usage;
   cost_usd?: number;
+  model?: string | null;
 }
 
 export interface PipelineAgentUsage {
   usage: Usage;
   cost_usd: number;
+  model?: string | null;
 }
 
 export interface ChapterRunRecord {
@@ -323,4 +360,8 @@ export interface StartRunOptions extends RunFormValues {
   // When set, Stage 1 (generation) is skipped and only prerequisite mapping runs on
   // this CSV. board/subject/grade/chapter are derived server-side from the CSV.
   curriculumCsv?: string;
+  // Per-agent model override (Gateway model id). Omitted keys fall back to the
+  // pipeline default server-side. Not part of RunFormValues/QueueItem — batch-queued
+  // chapters always use the pipeline default unless explicitly set here per-run.
+  models?: Partial<Record<AgentKey, string>>;
 }

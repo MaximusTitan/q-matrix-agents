@@ -26,8 +26,7 @@ from skills.kb_access import (
     save_concept_skill_map,
     load_extraction_guidance,
 )
-from skills.llm import call_llm
-from skills.pricing import cost_usd
+from skills.llm import call_llm, DEFAULT_MODEL
 
 # Load the base system prompt from file
 _PROMPT_PATH = os.path.join(
@@ -45,6 +44,7 @@ def run(
     grade: str,
     chapter: str,
     guidance: str = None,
+    model: str = DEFAULT_MODEL,
 ) -> dict:
     """
     Extract a concept-skill-map from a chapter PDF and save it to the KB.
@@ -100,7 +100,7 @@ chapter: {chapter}
 
     # Step 4 — Call LLM
     print(f"[map_extraction] Calling LLM...")
-    raw_response, usage = call_llm(system_prompt, user_content)
+    raw_response, usage, cost_usd = call_llm(system_prompt, user_content, model=model)
 
     # Step 5 — Parse JSON response
     cleaned = raw_response.strip()
@@ -134,4 +134,4 @@ chapter: {chapter}
     save_concept_skill_map(board, subject, grade, chapter, concept_skill_map)
     print(f"[map_extraction] Saved concept-skill-map to KB")
 
-    return {**concept_skill_map, "usage": usage, "cost_usd": cost_usd(usage)}
+    return {**concept_skill_map, "usage": usage, "cost_usd": cost_usd}

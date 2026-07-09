@@ -18,9 +18,11 @@ import json
 import os
 import queue
 import threading
+import time
 import traceback
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse
@@ -63,6 +65,7 @@ class RunRequest(BaseModel):
     grade:          str
     chapter:        str
     human_feedback: str | None = None
+    models:         dict[str, str] | None = None  # agent key -> Gateway model id
     no_sync:        bool       = True  # default True for safety in dev
 
 
@@ -72,6 +75,7 @@ class RejectRequest(BaseModel):
     grade:   str
     chapter: str
     reason:  str
+    models:  dict[str, str] | None = None
     no_sync: bool = True
 
 
@@ -81,11 +85,13 @@ class ReExtractRequest(BaseModel):
     grade:        str
     chapter:      str
     map_guidance: str
+    models:       dict[str, str] | None = None
     no_sync:      bool = True
 
 
 class PrereqOnlyRequest(BaseModel):
     csv_text: str
+    models:   dict[str, str] | None = None
     no_sync:  bool = True
 
 
@@ -130,6 +136,55 @@ async def dashboard():
     )
 
 
+_MODELS_CACHE_TTL = 60 * 60  # 1 hour
+_models_cache: dict = {"fetched_at": 0.0, "data": None}
+
+
+@app.get("/models")
+async def list_models():
+    """
+    Proxy the Gateway's model catalog for the dashboard's per-agent model picker.
+    Cached in-process for _MODELS_CACHE_TTL so every dashboard load doesn't refetch
+    ~300 models from the Gateway. Filtered to language models only (excludes image/
+    embedding/reranking/video models, which no agent here can use).
+    """
+    now = time.time()
+    if _models_cache["data"] is not None and now - _models_cache["fetched_at"] < _MODELS_CACHE_TTL:
+        return _models_cache["data"]
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://ai-gateway.vercel.sh/v1/models",
+                headers={"Authorization": f"Bearer {os.getenv('AI_GATEWAY_API_KEY')}"},
+            )
+            resp.raise_for_status()
+            models = resp.json().get("data", [])
+    except httpx.HTTPError as e:
+        # Serve the last-known catalog rather than breaking the run-start form.
+        if _models_cache["data"] is not None:
+            print(f"[api] /models fetch failed ({e}); serving stale cache")
+            return _models_cache["data"]
+        raise HTTPException(status_code=502, detail=f"Failed to fetch model catalog: {e}")
+
+    filtered = [
+        {
+            "id": m["id"],
+            "name": m.get("name", m["id"]),
+            "owned_by": m.get("owned_by", "unknown"),
+            "context_window": m.get("context_window", 0),
+            "tags": m.get("tags", []),
+            "pricing": m.get("pricing", {}),
+        }
+        for m in models
+        if m.get("type") == "language"
+    ]
+    data = {"models": filtered}
+    _models_cache["data"] = data
+    _models_cache["fetched_at"] = now
+    return data
+
+
 @app.post("/run")
 async def start_run(req: RunRequest):
     """Start a pipeline run in a background thread. Returns run_id for SSE streaming."""
@@ -142,6 +197,7 @@ async def start_run(req: RunRequest):
         grade=req.grade,
         chapter=req.chapter,
         human_feedback=req.human_feedback,
+        models=req.models,
     )
     return {"run_id": run_id}
 
@@ -158,6 +214,7 @@ async def reject(req: RejectRequest):
         grade=req.grade,
         chapter=req.chapter,
         reason=req.reason,
+        models=req.models,
     )
     return {"run_id": run_id}
 
@@ -177,7 +234,7 @@ async def run_prerequisite_only_route(req: PrereqOnlyRequest):
         raise HTTPException(status_code=400, detail=f"Invalid curriculum CSV: {e}")
 
     run_id = bus.create_run(board, subject, grade, chapter)
-    _spawn_run(run_id, run_prerequisite_only, csv_text=req.csv_text)
+    _spawn_run(run_id, run_prerequisite_only, csv_text=req.csv_text, models=req.models)
     return {"run_id": run_id}
 
 
@@ -193,6 +250,7 @@ async def re_extract(req: ReExtractRequest):
         grade=req.grade,
         chapter=req.chapter,
         map_guidance=req.map_guidance,
+        models=req.models,
     )
     return {"run_id": run_id}
 

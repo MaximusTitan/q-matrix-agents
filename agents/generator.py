@@ -21,8 +21,7 @@ Skills used:
 import json
 import os
 from skills.kb_access import load_curriculum_docs, load_prompt, load_prompt_at_level
-from skills.llm import call_llm_structured, add_usage
-from skills.pricing import cost_usd
+from skills.llm import call_llm_structured, add_usage, DEFAULT_MODEL
 from skills.csv_utils import CONCEPT_SKILL_ROWS_TOOL, rows_from_pairs, validate_rows, csv_to_text
 
 # Load the generator system prompt
@@ -55,7 +54,10 @@ class GenerationFailedError(ValueError):
         self.last_csv = last_csv
 
 
-def run(board: str, subject: str, grade: str, chapter: str, forced_level: str = None) -> dict:
+def run(
+    board: str, subject: str, grade: str, chapter: str,
+    forced_level: str = None, model: str = DEFAULT_MODEL,
+) -> dict:
     """
     Generate a curriculum CSV for a given chapter.
 
@@ -123,12 +125,14 @@ chapter: {chapter}
     last_error: ValueError | None = None
     last_rows: list[dict] = []
     usage_total = {}
+    cost_total = 0.0
     for gen_attempt in range(1, _MAX_GEN_ATTEMPTS + 1):
         print(f"[generator] Calling LLM (attempt {gen_attempt}/{_MAX_GEN_ATTEMPTS})...")
-        result, usage = call_llm_structured(
-            SYSTEM_PROMPT, user_content + correction, CONCEPT_SKILL_ROWS_TOOL
+        result, usage, cost = call_llm_structured(
+            SYSTEM_PROMPT, user_content + correction, CONCEPT_SKILL_ROWS_TOOL, model=model
         )
         usage_total = add_usage(usage_total, usage)
+        cost_total += cost
         rows = rows_from_pairs(board, subject, grade, chapter, result.get("rows", []))
 
         print(f"[generator] Validating rows...")
@@ -156,7 +160,7 @@ chapter: {chapter}
             "input_type": input_type,
             "rows":       rows,
             "usage":      usage_total,
-            "cost_usd":   cost_usd(usage_total),
+            "cost_usd":   cost_total,
         }
 
     # Exhausted retries — surface the last invalid rows (serialized) alongside the error
