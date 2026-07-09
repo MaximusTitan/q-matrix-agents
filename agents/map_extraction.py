@@ -27,6 +27,7 @@ from skills.kb_access import (
     load_extraction_guidance,
 )
 from skills.llm import call_llm
+from skills.pricing import cost_usd
 
 # Load the base system prompt from file
 _PROMPT_PATH = os.path.join(
@@ -99,7 +100,7 @@ chapter: {chapter}
 
     # Step 4 — Call LLM
     print(f"[map_extraction] Calling LLM...")
-    raw_response = call_llm(system_prompt, user_content)
+    raw_response, usage = call_llm(system_prompt, user_content)
 
     # Step 5 — Parse JSON response
     cleaned = raw_response.strip()
@@ -129,8 +130,8 @@ chapter: {chapter}
     skill_count   = len(concept_skill_map["skills"])
     print(f"[map_extraction] Extracted {concept_count} concepts, {skill_count} skills")
 
-    # Step 7 — Save to KB
+    # Step 7 — Save to KB (before attaching usage — that must not pollute this artifact)
     save_concept_skill_map(board, subject, grade, chapter, concept_skill_map)
     print(f"[map_extraction] Saved concept-skill-map to KB")
 
-    return concept_skill_map
+    return {**concept_skill_map, "usage": usage, "cost_usd": cost_usd(usage)}

@@ -21,7 +21,8 @@ Skills used:
 import json
 import os
 from skills.kb_access import load_curriculum_docs, load_prompt, load_prompt_at_level
-from skills.llm import call_llm_structured
+from skills.llm import call_llm_structured, add_usage
+from skills.pricing import cost_usd
 from skills.csv_utils import CONCEPT_SKILL_ROWS_TOOL, rows_from_pairs, validate_rows, csv_to_text
 
 # Load the generator system prompt
@@ -121,11 +122,13 @@ chapter: {chapter}
     correction = ""
     last_error: ValueError | None = None
     last_rows: list[dict] = []
+    usage_total = {}
     for gen_attempt in range(1, _MAX_GEN_ATTEMPTS + 1):
         print(f"[generator] Calling LLM (attempt {gen_attempt}/{_MAX_GEN_ATTEMPTS})...")
-        result = call_llm_structured(
+        result, usage = call_llm_structured(
             SYSTEM_PROMPT, user_content + correction, CONCEPT_SKILL_ROWS_TOOL
         )
+        usage_total = add_usage(usage_total, usage)
         rows = rows_from_pairs(board, subject, grade, chapter, result.get("rows", []))
 
         print(f"[generator] Validating rows...")
@@ -152,6 +155,8 @@ chapter: {chapter}
             "csv":        csv_to_text(rows),
             "input_type": input_type,
             "rows":       rows,
+            "usage":      usage_total,
+            "cost_usd":   cost_usd(usage_total),
         }
 
     # Exhausted retries — surface the last invalid rows (serialized) alongside the error

@@ -1,3 +1,10 @@
+export interface Usage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+}
+
 export type PipelineStatus = "idle" | "running" | "passed" | "escalated";
 
 // Terminal outcome reported when a run finishes. Extends PipelineStatus with
@@ -30,6 +37,8 @@ export interface CheckResult {
   // Pass-2 reconciliation audit trail: for each expected item that was first
   // marked missing but had a lexically-similar extra, the candidates + verdict.
   reconciliation?: Reconciliation;
+  usage?: Usage;
+  cost_usd?: number;
 }
 
 export interface ReconciliationEntry {
@@ -209,6 +218,8 @@ export interface DoctorTrailEntry {
   regressed: boolean;
   regressed_concepts: string[];
   regressed_skills: string[];
+  usage?: Usage;
+  cost_usd?: number;
 }
 
 export interface RunGenerator {
@@ -217,6 +228,8 @@ export interface RunGenerator {
   check1: CheckResult | null;
   check2: CheckResult | null;
   passed: boolean;
+  usage?: Usage;
+  cost_usd?: number;
 }
 
 export interface RunAttempt {
@@ -225,7 +238,10 @@ export interface RunAttempt {
   prompt_file: string;
   generator: RunGenerator | null;
   doctors: DoctorTrailEntry[];
+  revision: { usage: Usage; cost_usd: number } | null;
   produced_candidate: boolean;
+  attempt_usage?: Usage;
+  attempt_cost_usd?: number;
 }
 
 export interface RunJudgeCandidate {
@@ -245,6 +261,13 @@ export interface RunJudge {
   chosen_id: string | null;
   rationale: string | null;
   candidates: RunJudgeCandidate[];
+  usage?: Usage;
+  cost_usd?: number;
+}
+
+export interface PipelineAgentUsage {
+  usage: Usage;
+  cost_usd: number;
 }
 
 export interface ChapterRunRecord {
@@ -265,6 +288,12 @@ export interface ChapterRunRecord {
   confirmed_checkpoint: boolean;
   has_prereqs: boolean;
   attempts: RunAttempt[];
+  pipeline_agents?: {
+    map_extraction?: PipelineAgentUsage;
+    prerequisite?: PipelineAgentUsage;
+  };
+  total_usage?: Usage;
+  total_cost_usd?: number;
 }
 
 export interface ChapterAnalytics {

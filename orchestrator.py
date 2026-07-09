@@ -47,6 +47,7 @@ from skills.csv_utils import parse_csv, enriched_csv_to_text, validate_csv_schem
 from skills.git_sync import pull_kb, push_kb
 from skills.run_record import RunRecordBuilder
 from skills.report_render import render_report_md
+from skills.pricing import cost_usd
 
 MAX_ATTEMPTS = 3
 
@@ -82,7 +83,7 @@ def _run_prerequisite_phase(board, subject, grade, chapter, attempt, csv_text, e
     base CSV with empty prerequisite columns and continue.
 
     Returns:
-        (final_csv: str, checkpoint_path: str | None)
+        (final_csv: str, checkpoint_path: str | None, usage: dict, cost_usd: float)
     """
     emit("agent_started", {
         "agent":   "Prerequisites",
@@ -98,14 +99,18 @@ def _run_prerequisite_phase(board, subject, grade, chapter, attempt, csv_text, e
             "agent":  "Prerequisites",
             "output": {"error": f"CSV parse failed: {e}", "checkpoint": None},
         })
-        return csv_text, None
+        return csv_text, None, {}, 0.0
 
+    usage = {}
+    cost = 0.0
     try:
         result = run_prerequisite(rows, board, subject, grade, chapter)
         enriched_rows = result["rows"]
         warnings      = result.get("warnings", [])
         concept_edges = result.get("concept_edges", {})
         skill_edges   = result.get("skill_edges", {})
+        usage         = result.get("usage") or {}
+        cost          = result.get("cost_usd", 0.0)
     except Exception as e:
         # Defensive: the agent is built to self-recover, but never let it break a pass.
         print(f"[orchestrator] Prerequisite mapping failed — persisting empty columns: {e}")
@@ -130,9 +135,11 @@ def _run_prerequisite_phase(board, subject, grade, chapter, attempt, csv_text, e
             "skill_edge_count":   sum(len(v) for v in skill_edges.values()),
             "warnings":           warnings,
             "checkpoint":         checkpoint,
+            "usage":              usage,
+            "cost_usd":           cost,
         },
     })
-    return final_csv, checkpoint
+    return final_csv, checkpoint, usage, cost
 
 
 _IDENTIFIER_COLUMNS = ("board", "subject", "grade", "chapter")
@@ -203,7 +210,7 @@ def run_prerequisite_only(csv_text: str, emit=None) -> dict:
     })
     emit("attempt_started", {"attempt": 1, "max_attempts": 1})
 
-    final_csv, checkpoint = _run_prerequisite_phase(
+    final_csv, checkpoint, prereq_usage, prereq_cost = _run_prerequisite_phase(
         board, subject, grade, chapter, attempt=1, csv_text=csv_text, emit=emit
     )
 
@@ -212,6 +219,7 @@ def run_prerequisite_only(csv_text: str, emit=None) -> dict:
         board, subject, grade, chapter, date.today().isoformat(),
         mode="prerequisite_only",
     )
+    builder.add_pipeline_usage("prerequisite", prereq_usage, prereq_cost)
     builder.finalize(
         final_status="passed", failed_check=None,
         final_csv=final_csv, final_csv_name="confirmed.csv",
@@ -332,9 +340,11 @@ def _doctor_and_record(
         "violations":       [],
     }
 
-    def _coverage_error(message: str) -> dict:
+    def _coverage_error(message: str, usage: dict = None, cost_usd: float = 0.0) -> dict:
         """Failure result carrying a coverage doctor_entry so the run record still
-        captures that a doctor pass was attempted and why it produced no CSV."""
+        captures that a doctor pass was attempted and why it produced no CSV.
+        `usage`/`cost_usd` reflect whatever tokens the doctor call actually spent
+        (zero when it raised before a response came back)."""
         return {
             "csv": None, "passed": False,
             "doctor_entries": [{
@@ -344,6 +354,7 @@ def _doctor_and_record(
                 "reeval_check1": None, "reeval_check2": None,
                 "passed": False, "regressed": False,
                 "regressed_concepts": [], "regressed_skills": [],
+                "usage": usage or {}, "cost_usd": cost_usd,
             }],
         }
 
@@ -376,14 +387,17 @@ def _doctor_and_record(
         error = doc.get("error", "invalid CSV after retry")
         emit("agent_completed", {
             "agent":  "Doctor",
-            "output": {"error": error},
+            "output": {"error": error, "usage": doc.get("usage"), "cost_usd": doc.get("cost_usd")},
         })
-        return _coverage_error(error)
+        return _coverage_error(error, doc.get("usage"), doc.get("cost_usd", 0.0))
 
     doctored_csv = doc["csv"]
     emit("agent_completed", {
         "agent":  "Doctor",
-        "output": {"rows": len(doc["rows"]), "csv_preview": doctored_csv},
+        "output": {
+            "rows": len(doc["rows"]), "csv_preview": doctored_csv,
+            "usage": doc.get("usage"), "cost_usd": doc.get("cost_usd"),
+        },
     })
 
     # ── Re-verify the doctored CSV through both checks ─────────────────────────
@@ -437,6 +451,8 @@ def _doctor_and_record(
             "check1": {
                 "passed":   dc1["passed"],
                 "feedback": dc1["feedback"],
+                "usage":    dc1.get("usage"),
+                "cost_usd": dc1.get("cost_usd"),
             },
             "check2": {
                 "passed":             dc2["passed"],
@@ -451,7 +467,11 @@ def _doctor_and_record(
                 "regressed":          regressed,
                 "regressed_concepts": regressions["concepts"],
                 "regressed_skills":   regressions["skills"],
+                "usage":              dc2.get("usage"),
+                "cost_usd":           dc2.get("cost_usd"),
             },
+            "usage":    doc_eval.get("usage"),
+            "cost_usd": doc_eval.get("cost_usd"),
         },
     })
     print(f"[orchestrator] Doctored CSV re-verify — "
@@ -466,6 +486,7 @@ def _doctor_and_record(
         "passed": doc_eval["passed"], "regressed": regressed,
         "regressed_concepts": regressions["concepts"],
         "regressed_skills":   regressions["skills"],
+        "usage": doc.get("usage"), "cost_usd": doc.get("cost_usd", 0.0),
     }
 
     # ── Doctor chain: coverage fixed but rules broke → Rules Doctor ─────────────
@@ -541,7 +562,7 @@ def _rules_doctor_and_record(
         "violations":       check1.get("feedback", []),
     }
 
-    def _rules_error(message: str) -> dict:
+    def _rules_error(message: str, usage: dict = None, cost_usd: float = 0.0) -> dict:
         """Failure result carrying a rules doctor_entry so the run record still
         captures the attempted repair."""
         return {
@@ -553,6 +574,7 @@ def _rules_doctor_and_record(
                 "reeval_check1": None, "reeval_check2": None,
                 "passed": False, "regressed": False,
                 "regressed_concepts": [], "regressed_skills": [],
+                "usage": usage or {}, "cost_usd": cost_usd,
             }],
         }
 
@@ -583,14 +605,17 @@ def _rules_doctor_and_record(
         error = doc.get("error", "invalid CSV after retry")
         emit("agent_completed", {
             "agent":  "Doctor (rules)",
-            "output": {"error": error},
+            "output": {"error": error, "usage": doc.get("usage"), "cost_usd": doc.get("cost_usd")},
         })
-        return _rules_error(error)
+        return _rules_error(error, doc.get("usage"), doc.get("cost_usd", 0.0))
 
     doctored_csv = doc["csv"]
     emit("agent_completed", {
         "agent":  "Doctor (rules)",
-        "output": {"rows": len(doc["rows"]), "csv_preview": doctored_csv},
+        "output": {
+            "rows": len(doc["rows"]), "csv_preview": doctored_csv,
+            "usage": doc.get("usage"), "cost_usd": doc.get("cost_usd"),
+        },
     })
 
     # ── Re-verify the doctored CSV through both checks ─────────────────────────
@@ -626,6 +651,8 @@ def _rules_doctor_and_record(
             "check1": {
                 "passed":   dc1["passed"],
                 "feedback": dc1["feedback"],
+                "usage":    dc1.get("usage"),
+                "cost_usd": dc1.get("cost_usd"),
             },
             "check2": {
                 "passed":             dc2["passed"],
@@ -640,7 +667,11 @@ def _rules_doctor_and_record(
                 "regressed":          regressed,
                 "regressed_concepts": regressions["concepts"],
                 "regressed_skills":   regressions["skills"],
+                "usage":              dc2.get("usage"),
+                "cost_usd":           dc2.get("cost_usd"),
             },
+            "usage":    doc_eval.get("usage"),
+            "cost_usd": doc_eval.get("cost_usd"),
         },
     })
     print(f"[orchestrator] Rules-doctored CSV re-verify — "
@@ -655,6 +686,7 @@ def _rules_doctor_and_record(
         "passed": doc_eval["passed"], "regressed": regressed,
         "regressed_concepts": regressions["concepts"],
         "regressed_skills":   regressions["skills"],
+        "usage": doc.get("usage"), "cost_usd": doc.get("cost_usd", 0.0),
     }
 
     return {
@@ -783,6 +815,11 @@ def run_pipeline(
                 future_map = executor.submit(run_map_extraction, board, subject, grade, chapter)
                 future_gen = executor.submit(run_generator,      board, subject, grade, chapter)
                 map_result = future_map.result()
+                # Record spent tokens immediately — Map Extraction already completed
+                # successfully even if Generator subsequently fails and escalates.
+                builder.add_pipeline_usage(
+                    "map_extraction", map_result.get("usage") or {}, map_result.get("cost_usd", 0.0)
+                )
                 try:
                     gen_result = future_gen.result()
                 except (ValueError, FileNotFoundError) as e:
@@ -794,6 +831,8 @@ def run_pipeline(
                 "output": {
                     "concepts": map_result["concepts"],
                     "skills":   map_result["skills"],
+                    "usage":    map_result.get("usage"),
+                    "cost_usd": map_result.get("cost_usd"),
                 },
             })
 
@@ -829,6 +868,8 @@ def run_pipeline(
                 "rows":       len(gen_result["rows"]),
                 "input_type": current_input_type,
                 "csv_preview": current_csv,
+                "usage":      gen_result.get("usage"),
+                "cost_usd":   gen_result.get("cost_usd"),
             },
         })
         print(f"[orchestrator] Generated {len(gen_result['rows'])} rows via {current_input_type}")
@@ -859,6 +900,8 @@ def run_pipeline(
                 "check1": {
                     "passed":   c1["passed"],
                     "feedback": c1["feedback"],
+                    "usage":    c1.get("usage"),
+                    "cost_usd": c1.get("cost_usd"),
                 },
                 "check2": {
                     "passed":            c2["passed"],
@@ -870,7 +913,11 @@ def run_pipeline(
                     "extra_concepts":    c2.get("extra_concepts",    []),
                     "extra_skills":      c2.get("extra_skills",      []),
                     "reconciliation":    c2.get("reconciliation",    {"concepts": {}, "skills": {}}),
+                    "usage":             c2.get("usage"),
+                    "cost_usd":          c2.get("cost_usd"),
                 },
+                "usage":    eval_result.get("usage"),
+                "cost_usd": eval_result.get("cost_usd"),
             },
         })
 
@@ -885,6 +932,8 @@ def run_pipeline(
             gen_rows=len(gen_result["rows"]),
             check1=c1,
             check2=c2,
+            usage=gen_result.get("usage"),
+            cost_usd=gen_result.get("cost_usd", 0.0),
         )
 
         if c1["passed"] and c2["passed"]:
@@ -1014,16 +1063,18 @@ def run_pipeline(
                 "input":   {"failed_check": "check2", "mode": degree, "feedback": feedback},
             })
 
-            revised = run_revision(
+            revised, revision_usage = run_revision(
                 current_prompt=prompt_to_revise,
                 feedback=ref_feedback,
                 failed_check="check2",
                 mode=degree,
                 human_feedback=human_feedback if attempt == 1 else None,
             )
+            revision_cost = cost_usd(revision_usage)
             save_prompt(board, subject, revised, mode=save_mode, grade=grade)
             revision_occurred = True
             forced_level      = save_mode  # next generation must use this exact level
+            builder.add_revision(attempt=attempt, usage=revision_usage, cost_usd=revision_cost)
 
             emit("agent_completed", {
                 "agent": "Revision",
@@ -1032,6 +1083,8 @@ def run_pipeline(
                     "save_mode":      save_mode,
                     "prompt_length":  len(revised),
                     "revised_prompt": revised,
+                    "usage":          revision_usage,
+                    "cost_usd":       revision_cost,
                 },
             })
             print(f"[orchestrator] Saved revised prompt ({save_mode}); "
@@ -1048,17 +1101,19 @@ def run_pipeline(
                 "input":   {"failed_check": failed_check, "mode": mode, "feedback": feedback},
             })
 
-            revised = run_revision(
+            revised, revision_usage = run_revision(
                 current_prompt=prompt_to_revise,
                 feedback=feedback,
                 failed_check=failed_check,
                 mode=mode,
                 human_feedback=human_feedback if attempt == 1 else None,
             )
+            revision_cost = cost_usd(revision_usage)
 
             save_mode = "grade_prompt" if mode == "grade" else "base_prompt"
             save_prompt(board, subject, revised, mode=save_mode, grade=grade)
             revision_occurred = True
+            builder.add_revision(attempt=attempt, usage=revision_usage, cost_usd=revision_cost)
 
             emit("agent_completed", {
                 "agent": "Revision",
@@ -1067,6 +1122,8 @@ def run_pipeline(
                     "save_mode":      save_mode,
                     "prompt_length":  len(revised),
                     "revised_prompt": revised,
+                    "usage":          revision_usage,
+                    "cost_usd":       revision_cost,
                 },
             })
             print(f"[orchestrator] Saved revised prompt ({save_mode})")
@@ -1158,6 +1215,8 @@ def run_pipeline(
                     "chosen_id":  chosen["id"],
                     "rationale":  judge_rationale,
                     "candidates": merged,
+                    "usage":      verdict.get("usage"),
+                    "cost_usd":   verdict.get("cost_usd"),
                 },
             })
             print(f"[orchestrator] Judge selected {chosen['id']} "
@@ -1167,12 +1226,14 @@ def run_pipeline(
                 selected_by="judge", candidate_count=len(passing_candidates),
                 chosen_id=chosen["id"], rationale=judge_rationale,
                 candidates=merged,
+                usage=verdict.get("usage"), cost_usd=verdict.get("cost_usd", 0.0),
             )
 
         # ── Prerequisite mapping (Level 1, within-chapter) + persist checkpoint ──
-        final_csv, checkpoint = _run_prerequisite_phase(
+        final_csv, checkpoint, prereq_usage, prereq_cost = _run_prerequisite_phase(
             board, subject, grade, chapter, attempt, chosen["csv"], emit
         )
+        builder.add_pipeline_usage("prerequisite", prereq_usage, prereq_cost)
 
         # ── Persist the structured run record (latest-only) ─────────────────────
         builder.finalize(
@@ -1268,6 +1329,8 @@ def handle_re_extract(board, subject, grade, chapter, map_guidance, emit=None):
         "output": {
             "concepts": result["concepts"],
             "skills":   result["skills"],
+            "usage":    result.get("usage"),
+            "cost_usd": result.get("cost_usd"),
         },
     })
     print(f"[orchestrator] New map: {len(result['concepts'])} concepts, {len(result['skills'])} skills")

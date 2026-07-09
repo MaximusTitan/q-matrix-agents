@@ -18,7 +18,8 @@ Skills used:
 
 import json
 import os
-from skills.llm import call_llm
+from skills.llm import call_llm, add_usage
+from skills.pricing import cost_usd
 
 _PROMPT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -43,9 +44,10 @@ def _parse_llm_json(raw: str) -> dict | None:
         return None
 
 
-def _fallback_choice(candidates: list[dict], reason: str) -> dict:
+def _fallback_choice(candidates: list[dict], reason: str, usage: dict) -> dict:
     """Deterministic pick when the LLM output is unusable: prefer a generated
-    candidate, else the earliest by cycle."""
+    candidate, else the earliest by cycle. `usage` still reflects whatever tokens
+    were spent by the LLM attempts before falling back."""
     generated = [c for c in candidates if c.get("source") == "generated"]
     pool = generated or candidates
     chosen = min(pool, key=lambda c: c.get("cycle", 0))
@@ -62,6 +64,8 @@ def _fallback_choice(candidates: list[dict], reason: str) -> dict:
             }
             for c in candidates
         ],
+        "usage": usage,
+        "cost_usd": cost_usd(usage),
     }
 
 
@@ -125,8 +129,10 @@ skills:
 {chr(10).join(candidate_blocks)}"""
 
     result = None
+    usage_total = {}
     for attempt in range(2):
-        raw    = call_llm(SYSTEM_PROMPT, user_content)
+        raw, usage = call_llm(SYSTEM_PROMPT, user_content)
+        usage_total = add_usage(usage_total, usage)
         result = _parse_llm_json(raw)
         if result is not None and result.get("chosen_id") in valid_ids:
             break
@@ -135,7 +141,9 @@ skills:
 
     if result is None:
         print("[judge] LLM output unusable after retry — falling back deterministically")
-        return _fallback_choice(candidates, "judge output unparseable")
+        return _fallback_choice(candidates, "judge output unparseable", usage_total)
 
+    result["usage"] = usage_total
+    result["cost_usd"] = cost_usd(usage_total)
     print(f"[judge] Chose {result['chosen_id']}")
     return result

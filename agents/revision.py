@@ -12,7 +12,7 @@ failed_check can be "check1", "check2", or "both" since both checks
 run in parallel and may fail simultaneously.
 
 Input:  current_prompt, feedback, failed_check, mode, human_feedback (optional)
-Output: revised_prompt (str)
+Output: (revised_prompt, usage)
 
 Skills used:
     llm — call_llm
@@ -36,7 +36,7 @@ def run(
     failed_check: str,
     mode: str,
     human_feedback: str = None,
-) -> str:
+) -> tuple[str, dict]:
     """
     Rewrite a generation prompt based on eval feedback.
 
@@ -49,7 +49,8 @@ def run(
         human_feedback: Optional additional guidance from a human reviewer.
 
     Returns:
-        The revised prompt as a plain string.
+        (revised_prompt, usage) — the revised prompt as a plain string, and the
+        token usage dict for the LLM call.
 
     Raises:
         ValueError: If mode or failed_check are invalid.
@@ -77,6 +78,6 @@ def run(
 4. feedback:
 {feedback_text}{human_section}"""
 
-    revised = call_llm(SYSTEM_PROMPT, user_content)
+    revised, usage = call_llm(SYSTEM_PROMPT, user_content)
     print(f"[revision] Revised prompt generated ({len(revised)} chars)")
-    return revised.strip()
+    return revised.strip(), usage

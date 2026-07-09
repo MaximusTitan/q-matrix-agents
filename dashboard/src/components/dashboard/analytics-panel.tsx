@@ -20,6 +20,7 @@ import type {
 import { CheckStatus, CheckSummary } from "./shared/check-summary";
 import { CsvEntry } from "./shared/csv-entry";
 import { DoctorTrail } from "./shared/doctor-trail";
+import { UsageBadge } from "./shared/usage-badge";
 
 export interface SelectedChapter {
   board: string;
@@ -478,11 +479,14 @@ function AttemptInsightCard({
   const doctorSteps = doctorStepsFromRecord(attempt.doctors, loadCsv);
   return (
     <div className="space-y-3 rounded border border-border bg-background p-3">
-      <div className="text-[11px] font-bold">
-        Attempt {attempt.attempt}
-        {attempt.input_type && (
-          <span className="ml-2 font-normal text-muted-foreground">({attempt.input_type})</span>
-        )}
+      <div className="flex items-center gap-2 text-[11px] font-bold">
+        <span>
+          Attempt {attempt.attempt}
+          {attempt.input_type && (
+            <span className="ml-2 font-normal text-muted-foreground">({attempt.input_type})</span>
+          )}
+        </span>
+        <UsageBadge usage={attempt.attempt_usage} costUsd={attempt.attempt_cost_usd} />
       </div>
 
       {gen && (
@@ -533,6 +537,7 @@ function RunInsightsCard({
           <span className="text-muted-foreground">Attempts: </span>
           <span className="font-semibold">{run.attempts.length}</span>
         </span>
+        <UsageBadge usage={run.total_usage} costUsd={run.total_cost_usd} />
         {run.selected_by && (
           <span>
             <span className="text-muted-foreground">Selected by: </span>

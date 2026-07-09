@@ -23,7 +23,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from skills.kb_access import load_rules, load_concept_skill_map
-from skills.llm import call_llm_structured
+from skills.llm import call_llm_structured, add_usage
+from skills.pricing import cost_usd
 from skills.csv_utils import RULES_CHECK_TOOL
 from skills.diff import diff_full
 
@@ -54,13 +55,13 @@ def run_check1(csv: str, board: str, subject: str, grade: str) -> dict:
 --- GENERATED CSV ---
 {csv}"""
 
-    result = call_llm_structured(SYSTEM_PROMPT, user_content, RULES_CHECK_TOOL)
+    result, usage = call_llm_structured(SYSTEM_PROMPT, user_content, RULES_CHECK_TOOL)
 
     passed   = result.get("passed", False)
     feedback = result.get("feedback", [])
 
     print(f"[eval] Check 1: {'PASSED' if passed else 'FAILED'} ({len(feedback)} issue(s))")
-    return {"passed": passed, "feedback": feedback}
+    return {"passed": passed, "feedback": feedback, "usage": usage, "cost_usd": cost_usd(usage)}
 
 
 def run_check2(csv: str, board: str, subject: str, grade: str, chapter: str) -> dict:
@@ -111,8 +112,11 @@ def run(
     passed = check1["passed"] and check2["passed"]
     print(f"[eval] Overall: {'✓ PASSED' if passed else '✗ FAILED'}")
 
+    usage = add_usage(check1.get("usage") or {}, check2.get("usage") or {})
     return {
         "check1": check1,
         "check2": check2,
         "passed": passed,
+        "usage": usage,
+        "cost_usd": cost_usd(usage),
     }

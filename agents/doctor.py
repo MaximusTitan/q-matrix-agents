@@ -24,7 +24,8 @@ Skills used:
 
 import json
 import os
-from skills.llm import call_llm_structured
+from skills.llm import call_llm_structured, add_usage
+from skills.pricing import cost_usd
 from skills.csv_utils import CONCEPT_SKILL_ROWS_TOOL, rows_from_pairs, validate_rows, csv_to_text
 
 _PROMPT_PATH = os.path.join(
@@ -111,11 +112,13 @@ skills:
 
     correction = ""
     last_error = None
+    usage_total = {}
     for attempt in range(2):
         print(f"[doctor] Calling LLM (attempt {attempt + 1}/2)...")
-        result = call_llm_structured(
+        result, usage = call_llm_structured(
             SYSTEM_PROMPT, base_user_content + correction, CONCEPT_SKILL_ROWS_TOOL
         )
+        usage_total = add_usage(usage_total, usage)
         rows = rows_from_pairs(board, subject, grade, chapter, result.get("rows", []))
 
         try:
@@ -136,7 +139,13 @@ skills:
             continue
 
         print(f"[doctor] Doctored CSV produced ({len(rows)} rows)")
-        return {"csv": csv_to_text(rows), "rows": rows}
+        return {
+            "csv": csv_to_text(rows), "rows": rows,
+            "usage": usage_total, "cost_usd": cost_usd(usage_total),
+        }
 
     print("[doctor] Doctoring failed — rows invalid after retry")
-    return {"csv": None, "error": last_error}
+    return {
+        "csv": None, "error": last_error,
+        "usage": usage_total, "cost_usd": cost_usd(usage_total),
+    }

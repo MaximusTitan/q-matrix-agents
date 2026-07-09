@@ -3,10 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Copy, Download } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import type { AgentRecord, Reconciliation, ReconciliationEntry } from "@/lib/types";
+import type { AgentRecord, Reconciliation, ReconciliationEntry, Usage } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { copyCsv, downloadCsv } from "@/lib/csv-actions";
 import { parseCSVLine } from "@/lib/csv-utils";
+import { sumUsage } from "@/lib/usage";
+import { UsageBadge } from "./shared/usage-badge";
 
 const AGENT_ICONS: Record<string, string> = {
   Generator: "⚙",
@@ -722,6 +724,7 @@ function MapExtractionCard({ agent }: { agent: AgentRecord }) {
         <div className="flex-1 text-xs font-bold" style={{ color }}>
           {agent.name}
         </div>
+        <UsageBadge usage={out?.usage as Usage | undefined} costUsd={out?.cost_usd as number | undefined} />
         {agent.status === "running" ? (
           <span className="text-[10px] font-bold text-[var(--qm-amber)]">
             <span className="inline-block animate-spin">⟳</span> RUNNING
@@ -806,6 +809,7 @@ function EvalCard({ agent }: { agent: AgentRecord }) {
         <div className="flex-1 text-xs font-bold" style={{ color }}>
           {agent.name}
         </div>
+        <UsageBadge usage={out?.usage as Usage | undefined} costUsd={out?.cost_usd as number | undefined} />
         {agent.status === "running" ? (
           <span className="text-[10px] font-bold text-[var(--qm-amber)]">
             <span className="inline-block animate-spin">⟳</span> RUNNING
@@ -946,6 +950,7 @@ function DoctorCard({ agent }: { agent: AgentRecord }) {
         <div className="flex-1 text-xs font-bold" style={{ color }}>
           {agent.name}
         </div>
+        <UsageBadge usage={out?.usage as Usage | undefined} costUsd={out?.cost_usd as number | undefined} />
         {agent.status === "running" ? (
           <span className="text-[10px] font-bold text-[var(--qm-amber)]">
             <span className="inline-block animate-spin">⟳</span> RUNNING
@@ -1050,6 +1055,7 @@ function JudgeCard({ agent }: { agent: AgentRecord }) {
         <div className="flex-1 text-xs font-bold" style={{ color }}>
           {agent.name}
         </div>
+        <UsageBadge usage={out?.usage as Usage | undefined} costUsd={out?.cost_usd as number | undefined} />
         {agent.status === "running" ? (
           <span className="text-[10px] font-bold text-[var(--qm-amber)]">
             <span className="inline-block animate-spin">⟳</span> RUNNING
@@ -1169,6 +1175,8 @@ function AgentCard({ agent }: { agent: AgentRecord }) {
       ? (agent.output as Record<string, unknown>).revised_prompt as string
       : null;
 
+  const out = agent.output as Record<string, unknown> | null;
+
   return (
     <Card className="border-border bg-card py-0">
       <CardHeader className="flex flex-row items-center gap-3 border-b border-border px-4 py-2.5">
@@ -1181,6 +1189,7 @@ function AgentCard({ agent }: { agent: AgentRecord }) {
         <div className="flex-1 text-xs font-bold" style={{ color }}>
           {agent.name}
         </div>
+        <UsageBadge usage={out?.usage as Usage | undefined} costUsd={out?.cost_usd as number | undefined} />
         {agent.status === "running" ? (
           <span className="text-[10px] font-bold text-[var(--qm-amber)]">
             <span className="inline-block animate-spin">⟳</span> RUNNING
@@ -1264,6 +1273,14 @@ function AttemptGroup({
   const statusLabel =
     status === "running" ? "Running" : status === "failed" ? "Failed" : "Done";
 
+  const cycleUsage = sumUsage(
+    agents.map((a) => (a.output as Record<string, unknown> | null)?.usage as Usage | undefined)
+  );
+  const cycleCost = agents.reduce(
+    (sum, a) => sum + (((a.output as Record<string, unknown> | null)?.cost_usd as number) || 0),
+    0
+  );
+
   return (
     <div className="rounded-md border border-border overflow-hidden">
       <button
@@ -1282,6 +1299,7 @@ function AttemptGroup({
         <span className="text-[10px] text-muted-foreground">
           {agents.length} agent{agents.length !== 1 ? "s" : ""}
         </span>
+        <UsageBadge usage={cycleUsage} costUsd={cycleCost} />
         <span className="ml-auto text-muted-foreground">
           {isOpen ? (
             <ChevronUp className="h-3.5 w-3.5" />
@@ -1360,10 +1378,19 @@ export function AgentTimeline({ agents, currentAttempt }: AgentTimelineProps) {
     });
   };
 
+  const totalUsage = sumUsage(
+    agents.map((a) => (a.output as Record<string, unknown> | null)?.usage as Usage | undefined)
+  );
+  const totalCost = agents.reduce(
+    (sum, a) => sum + (((a.output as Record<string, unknown> | null)?.cost_usd as number) || 0),
+    0
+  );
+
   return (
     <div className="mb-6">
-      <div className="mb-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-        Agent Timeline
+      <div className="mb-3 flex items-center gap-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+        <span>Agent Timeline</span>
+        <UsageBadge usage={totalUsage} costUsd={totalCost} />
       </div>
       <div className="space-y-2">
         {/* Pre-run section: Map Extraction runs once before any cycle */}

@@ -29,7 +29,8 @@ Skills used:
 
 import json
 import os
-from skills.llm import call_llm
+from skills.llm import call_llm, add_usage
+from skills.pricing import cost_usd
 from skills.csv_utils import csv_to_text
 
 # Level-1 column names. Levels 2-4 will add their own (e.g. *_L2_cross_chapter).
@@ -144,8 +145,10 @@ chapter: {chapter}
 {csv_to_text(rows)}"""
 
     parsed = None
+    usage_total = {}
     for attempt in range(2):
-        raw = call_llm(SYSTEM_PROMPT, user_content)
+        raw, usage = call_llm(SYSTEM_PROMPT, user_content)
+        usage_total = add_usage(usage_total, usage)
         parsed = _parse_llm_json(raw)
         if isinstance(parsed, dict):
             break
@@ -201,4 +204,6 @@ chapter: {chapter}
         "concept_edges": concept_edges,
         "skill_edges": skill_edges,
         "warnings": warnings,
+        "usage": usage_total,
+        "cost_usd": cost_usd(usage_total),
     }
