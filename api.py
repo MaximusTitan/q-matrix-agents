@@ -41,6 +41,7 @@ from orchestrator import (
 )
 from skills.csv_utils import validate_csv_schema, parse_csv
 from skills import kb_access
+from skills.model_stats import compute_model_performance
 
 app = FastAPI(title="Q-Matrix Dashboard API")
 
@@ -465,6 +466,21 @@ def _build_chapter_entry(
         "latest_failed_check": (latest or {}).get("failed_check") or None,
         "attempts": (latest or {}).get("total_attempts"),
     }
+
+
+@app.get("/kb/analytics/models")
+async def model_performance():
+    """
+    Model Performance rollup for the analytics dashboard: per-(agent, model) pass/
+    fail counts, cost, and token/row averages across every run in the KB (both the
+    latest run/ snapshot per chapter and every historical escalations/ snapshot,
+    deduped by run_id — see kb_access.list_all_run_records).
+    """
+    try:
+        records = kb_access.list_all_run_records()
+    except Exception:
+        records = []
+    return compute_model_performance(records)
 
 
 @app.get("/kb/analytics/chapter")

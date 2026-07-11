@@ -766,6 +766,47 @@ def load_escalation_report(folder: str) -> dict:
     }
 
 
+def list_all_run_records() -> list[dict]:
+    """
+    Every structured run record in the KB — both sources, deduped by run_id.
+
+    Two on-disk sources hold run.json:
+        textbooks/{board}/{subject}/{grade}/{chapter}/run/run.json
+            latest run only (pass or fail) — overwritten every re-run.
+        escalations/{board}_{subject}_{grade}_{chapter}_{date}/run.json
+            one snapshot per historical failure, accumulated by date, never
+            overwritten (write_escalation persists a full run.json here too,
+            not just report.md).
+
+    A chapter currently sitting in escalated state has its current failure
+    present in BOTH sources with the same run_id — deduping on that key means
+    every distinct run is counted exactly once regardless of how many places
+    it happens to be persisted.
+    """
+    records: dict[str, dict] = {}
+
+    for ch in list_textbook_chapters():
+        rec = load_run_record(ch["board"], ch["subject"], ch["grade"], ch["chapter"])
+        if rec:
+            records[rec["run_id"]] = rec
+
+    for esc in list_escalations():
+        path = os.path.join(KB_ROOT, "escalations", esc["folder"], "run.json")
+        if not file_exists(path):
+            continue
+        # Read raw (not read_file, which strips Obsidian YAML frontmatter) — JSON
+        # must be parsed byte-for-byte, same as load_run_record.
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read()
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        records[rec["run_id"]] = rec
+
+    return list(records.values())
+
+
 def confirmed_csv_has_prereqs(board: str, subject: str, grade: str, chapter: str) -> bool:
     """
     Return True if a chapter's confirmed CSV has any non-empty Level-1 prerequisite

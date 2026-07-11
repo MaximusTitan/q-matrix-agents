@@ -2,6 +2,7 @@ import type {
   AgentKey,
   AnalyticsResponse,
   ChapterAnalytics,
+  ModelPerformanceResponse,
   RunFormValues,
   RunMetadata,
 } from "./types";
@@ -95,6 +96,14 @@ export async function fetchAnalytics(): Promise<AnalyticsResponse> {
     throw new Error(`Failed to fetch analytics: ${res.status}`);
   }
   return res.json() as Promise<AnalyticsResponse>;
+}
+
+export async function fetchModelPerformance(): Promise<ModelPerformanceResponse> {
+  const res = await fetch(`${API_BASE}/kb/analytics/models`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch model performance: ${res.status}`);
+  }
+  return res.json() as Promise<ModelPerformanceResponse>;
 }
 
 export async function fetchChapterAnalytics(

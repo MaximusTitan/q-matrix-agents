@@ -3,6 +3,7 @@
 import type { DoctorStepView } from "@/lib/doctor-trail";
 import { CheckStatus, CheckSummary } from "./check-summary";
 import { CsvEntry } from "./csv-entry";
+import { UsageBadge } from "./usage-badge";
 
 const KIND_LABEL: Record<string, string> = {
   coverage: "Coverage Doctor 🩺",
@@ -48,6 +49,7 @@ function DoctorStep({ step }: { step: DoctorStepView }) {
             ⚠ regressed coverage
           </span>
         )}
+        <UsageBadge usage={step.usage} costUsd={step.costUsd} model={step.model} />
       </div>
 
       {step.error && <div className="text-[11px] text-[var(--qm-red)]">{step.error}</div>}

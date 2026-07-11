@@ -11,18 +11,7 @@ import {
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import type { AgentKey, ModelInfo } from "@/lib/types";
-import { supportsToolUse, TOOL_CALLING_AGENTS } from "@/lib/models";
-
-const AGENT_LABELS: Record<AgentKey, string> = {
-  map_extraction: "Map Extraction",
-  generator: "Generator",
-  eval: "Eval",
-  doctor: "Doctor",
-  rules_doctor: "Doctor (rules)",
-  revision: "Revision",
-  judge: "Judge",
-  prerequisite: "Prerequisites",
-};
+import { AGENT_LABELS, supportsToolUse, TOOL_CALLING_AGENTS } from "@/lib/models";
 
 // One agent's model dropdown, grouped by provider. Tool-calling agents (Generator,
 // Eval, Doctor, Doctor (rules)) only show models tagged "tool-use" — they force a

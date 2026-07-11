@@ -71,7 +71,7 @@ export default function DashboardPage() {
           </button>
 
           {sidebarOpen && (
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="thin-scroll flex min-h-0 flex-1 flex-col overflow-y-auto">
               <RunForm
                 form={form}
                 onFormChange={setForm}

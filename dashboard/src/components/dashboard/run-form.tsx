@@ -18,8 +18,17 @@ import { fetchModels } from "@/lib/models";
 import { AgentModelPicker } from "./model-select";
 import { AGENT_KEYS, type AgentKey, type ModelInfo, type RunFormValues, type StartRunOptions } from "@/lib/types";
 
-// Keep in sync with skills/llm.py::DEFAULT_MODEL.
-const DEFAULT_MODEL = "openai/gpt-5.4-mini";
+// Keep in sync with orchestrator.py::AGENT_DEFAULT_MODELS.
+const AGENT_DEFAULT_MODELS: Record<AgentKey, string> = {
+  map_extraction: "anthropic/claude-sonnet-4-6",
+  generator: "anthropic/claude-sonnet-4-6",
+  eval: "openai/gpt-5.4-mini",
+  doctor: "openai/gpt-5.4-mini",
+  rules_doctor: "openai/gpt-5.4-mini",
+  revision: "openai/gpt-5.4-mini",
+  judge: "openai/gpt-5.4-mini",
+  prerequisite: "openai/gpt-5.4-mini",
+};
 
 interface RunFormProps {
   form: RunFormValues;
@@ -145,7 +154,7 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
                 agentKey={agentKey}
                 models={availableModels}
                 value={modelOverrides[agentKey]}
-                defaultModel={DEFAULT_MODEL}
+                defaultModel={AGENT_DEFAULT_MODELS[agentKey]}
                 onChange={(modelId) => setAgentModel(agentKey, modelId)}
               />
             ))

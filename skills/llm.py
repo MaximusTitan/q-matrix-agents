@@ -25,7 +25,7 @@ _client = openai.OpenAI(
     base_url="https://ai-gateway.vercel.sh/v1",
 )
 
-DEFAULT_MODEL = "openai/gpt-5.4-mini"
+DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
 MAX_TOKENS    = 8096
 MAX_RETRIES   = 3
 RETRY_DELAY   = 5  # seconds

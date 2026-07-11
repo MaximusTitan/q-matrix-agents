@@ -60,7 +60,7 @@ def run_check1(csv: str, board: str, subject: str, grade: str, model: str = DEFA
     feedback = result.get("feedback", [])
 
     print(f"[eval] Check 1: {'PASSED' if passed else 'FAILED'} ({len(feedback)} issue(s))")
-    return {"passed": passed, "feedback": feedback, "usage": usage, "cost_usd": cost_usd}
+    return {"passed": passed, "feedback": feedback, "usage": usage, "cost_usd": cost_usd, "model": model}
 
 
 def run_check2(
@@ -122,4 +122,5 @@ def run(
         "passed": passed,
         "usage": usage,
         "cost_usd": cost_total,
+        "model": model,
     }

@@ -358,6 +358,7 @@ Skills:   {json.dumps(actual_skills, indent=2)}"""
             "reasoning":        "Parse error",
             "usage":            usage_total,
             "cost_usd":         cost_total,
+            "model":            model,
         }
 
     missing_concepts  = result.get("missing_concepts",  [])
@@ -416,4 +417,5 @@ Skills:   {json.dumps(actual_skills, indent=2)}"""
         "reasoning":        reasoning,
         "usage":            usage_total,
         "cost_usd":         cost_total,
+        "model":            model,
     }

@@ -2,7 +2,7 @@
 // a live SSE run's in-memory agent list, and a persisted run.json trail — into one
 // view model (DoctorStepView) so a single <DoctorTrail> component renders both.
 
-import type { AgentRecord, CheckResult, DoctorGaps, DoctorKind, DoctorTrailEntry } from "./types";
+import type { AgentRecord, CheckResult, DoctorGaps, DoctorKind, DoctorTrailEntry, Usage } from "./types";
 import type { CsvSourceInput } from "@/components/dashboard/shared/csv-entry";
 
 export interface DoctorStepView {
@@ -17,6 +17,9 @@ export interface DoctorStepView {
   regressed: boolean;
   regressedConcepts: string[];
   regressedSkills: string[];
+  usage?: Usage;
+  costUsd?: number;
+  model?: string | null;
 }
 
 // Historical (analytics) adapter: map each persisted trail entry, wiring its CSV as a
@@ -37,6 +40,9 @@ export function doctorStepsFromRecord(
     regressed: d.regressed,
     regressedConcepts: d.regressed_concepts ?? [],
     regressedSkills: d.regressed_skills ?? [],
+    usage: d.usage,
+    costUsd: d.cost_usd,
+    model: d.model,
   }));
 }
 
@@ -68,6 +74,9 @@ export function doctorStepsFromAgents(agents: AgentRecord[]): DoctorStepView[] {
         },
         csv: csvText ? { kind: "text", text: csvText, filename: "doctored.csv" } : null,
         error: (output.error as string) ?? null,
+        usage: output.usage as Usage | undefined,
+        costUsd: output.cost_usd as number | undefined,
+        model: output.model as string | null | undefined,
         check1: null,
         check2: null,
         passed: false,

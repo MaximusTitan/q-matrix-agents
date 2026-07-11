@@ -8,8 +8,8 @@ import {
   AnalyticsPanel,
   type SelectedChapter,
 } from "@/components/dashboard/analytics-panel";
-import { fetchAnalytics, fetchChapterAnalytics } from "@/lib/api";
-import type { AnalyticsResponse, ChapterAnalytics } from "@/lib/types";
+import { fetchAnalytics, fetchChapterAnalytics, fetchModelPerformance } from "@/lib/api";
+import type { AnalyticsResponse, ChapterAnalytics, ModelPerformanceResponse } from "@/lib/types";
 
 function AnalyticsHeader() {
   return (
@@ -44,6 +44,7 @@ function AnalyticsView() {
 
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [modelPerformance, setModelPerformance] = useState<ModelPerformanceResponse | null>(null);
 
   // Detail state is keyed to the selection it belongs to, so a stale fetch or a
   // deselect never shows the wrong chapter. Loading/error are derived, not stored,
@@ -74,9 +75,20 @@ function AnalyticsView() {
     }
   }, []);
 
+  // Model Performance is a supplementary rollup — a failure here shouldn't block
+  // the main analytics view, so it's swallowed rather than surfaced as `error`.
+  const loadModelPerformance = useCallback(async () => {
+    try {
+      setModelPerformance(await fetchModelPerformance());
+    } catch {
+      setModelPerformance(null);
+    }
+  }, []);
+
   useEffect(() => {
     loadAnalytics();
-  }, [loadAnalytics]);
+    loadModelPerformance();
+  }, [loadAnalytics, loadModelPerformance]);
 
   // Monotonic token so a slow detail fetch can't overwrite a newer selection.
   const detailReqId = useRef(0);
@@ -136,6 +148,7 @@ function AnalyticsView() {
           data={data}
           loading={loading}
           error={error}
+          modelPerformance={modelPerformance}
           selected={selected}
           detail={detailForSel}
           detailLoading={detailLoading}

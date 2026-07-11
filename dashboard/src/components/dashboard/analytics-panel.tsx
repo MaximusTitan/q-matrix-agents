@@ -6,6 +6,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { copyCsv, downloadCsv } from "@/lib/csv-actions";
 import { fetchRunCsv } from "@/lib/api";
 import { doctorStepsFromRecord } from "@/lib/doctor-trail";
+import { sumUsage } from "@/lib/usage";
 import { cn } from "@/lib/utils";
 import type {
   AnalyticsChapter,
@@ -15,11 +16,13 @@ import type {
   ChapterStatus,
   EscalationAttempt,
   EscalationReport,
+  ModelPerformanceResponse,
   RunAttempt,
 } from "@/lib/types";
 import { CheckStatus, CheckSummary } from "./shared/check-summary";
 import { CsvEntry } from "./shared/csv-entry";
 import { DoctorTrail } from "./shared/doctor-trail";
+import { ModelPerformancePanel } from "./model-performance-panel";
 import { UsageBadge } from "./shared/usage-badge";
 
 export interface SelectedChapter {
@@ -33,6 +36,7 @@ interface AnalyticsPanelProps {
   data: AnalyticsResponse | null;
   loading: boolean;
   error: string | null;
+  modelPerformance: ModelPerformanceResponse | null;
   selected: SelectedChapter | null;
   detail: ChapterAnalytics | null;
   detailLoading: boolean;
@@ -491,6 +495,12 @@ function AttemptInsightCard({
 
       {gen && (
         <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              Generator
+            </span>
+            <UsageBadge usage={gen.usage} costUsd={gen.cost_usd} model={gen.model} />
+          </div>
           <CsvEntry
             source={{
               kind: "ref",
@@ -500,6 +510,16 @@ function AttemptInsightCard({
               load: loadCsv,
             }}
           />
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              Eval
+            </span>
+            <UsageBadge
+              usage={sumUsage([gen.check1?.usage, gen.check2?.usage])}
+              costUsd={(gen.check1?.cost_usd ?? 0) + (gen.check2?.cost_usd ?? 0)}
+              model={gen.check1?.model ?? gen.check2?.model}
+            />
+          </div>
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
             <CheckSummary title="Check 1 — Universal Rules" check={gen.check1} />
             <CheckSummary title="Check 2 — CSM Coverage" check={gen.check2} />
@@ -508,6 +528,19 @@ function AttemptInsightCard({
       )}
 
       <DoctorTrail steps={doctorSteps} />
+
+      {attempt.revision && (
+        <div className="flex items-center justify-between rounded border border-border bg-card/60 px-3 py-2">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+            Revision
+          </span>
+          <UsageBadge
+            usage={attempt.revision.usage}
+            costUsd={attempt.revision.cost_usd}
+            model={attempt.revision.model}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -547,6 +580,9 @@ function RunInsightsCard({
             </span>
           </span>
         )}
+        {run.selected_by === "judge" && (
+          <UsageBadge usage={run.judge?.usage} costUsd={run.judge?.cost_usd} model={run.judge?.model} />
+        )}
         {run.judge?.rationale && (
           <button
             onClick={() => setShowRationale((p) => !p)}
@@ -556,6 +592,31 @@ function RunInsightsCard({
           </button>
         )}
       </div>
+
+      {(run.pipeline_agents?.map_extraction || run.pipeline_agents?.prerequisite) && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border px-4 py-2 text-[11px]">
+          {run.pipeline_agents?.map_extraction && (
+            <span className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">Map Extraction:</span>
+              <UsageBadge
+                usage={run.pipeline_agents.map_extraction.usage}
+                costUsd={run.pipeline_agents.map_extraction.cost_usd}
+                model={run.pipeline_agents.map_extraction.model}
+              />
+            </span>
+          )}
+          {run.pipeline_agents?.prerequisite && (
+            <span className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">Prerequisites:</span>
+              <UsageBadge
+                usage={run.pipeline_agents.prerequisite.usage}
+                costUsd={run.pipeline_agents.prerequisite.cost_usd}
+                model={run.pipeline_agents.prerequisite.model}
+              />
+            </span>
+          )}
+        </div>
+      )}
 
       {showRationale && run.judge?.rationale && (
         <div className="border-b border-border px-4 py-2 text-[11px] leading-relaxed text-foreground/70">
@@ -659,6 +720,7 @@ export function AnalyticsPanel({
   data,
   loading,
   error,
+  modelPerformance,
   selected,
   detail,
   detailLoading,
@@ -685,6 +747,7 @@ export function AnalyticsPanel({
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6 p-6">
       <SummaryRow data={data} />
+      <ModelPerformancePanel data={modelPerformance} />
       <div className="flex min-h-0 flex-1 gap-6">
         {/* Grouped tree */}
         <div

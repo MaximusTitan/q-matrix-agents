@@ -72,6 +72,7 @@ export interface CheckResult {
   reconciliation?: Reconciliation;
   usage?: Usage;
   cost_usd?: number;
+  model?: string | null;
 }
 
 export interface ReconciliationEntry {
@@ -190,6 +191,39 @@ export interface AnalyticsGroup {
 export interface AnalyticsResponse {
   summary: AnalyticsSummary;
   groups: AnalyticsGroup[];
+}
+
+// ─── Model Performance ──────────────────────────────────────────────────────
+// Rollup across every persisted run in the KB (backend: skills/model_stats.py),
+// grouped by (agent, model) — which model configuration has actually performed
+// best for each agent, and what it has cost so far.
+
+export interface ModelPerformanceEntry {
+  agent: AgentKey;
+  model: string;
+  runs: number;
+  passed: number;
+  escalated: number;
+  pass_rate: number; // 0-1
+  total_cost_usd: number;
+  avg_cost_usd: number;
+  avg_usage: Usage;
+  avg_rows: number | null; // Generator only
+  last_used: string | null; // ISO date
+}
+
+export interface ModelPerformanceProvider {
+  provider: string;
+  runs: number;
+  total_cost_usd: number;
+}
+
+export interface ModelPerformanceResponse {
+  total_runs: number;
+  total_cost_usd: number;
+  distinct_models: number;
+  by_provider: ModelPerformanceProvider[];
+  entries: ModelPerformanceEntry[];
 }
 
 export interface EscalationAttempt {

@@ -52,15 +52,30 @@ from skills.llm import DEFAULT_MODEL
 MAX_ATTEMPTS = 3
 
 # Keys accepted in the `models` dict threaded through run_pipeline(...) — one per
-# agent, each defaulting to DEFAULT_MODEL when not supplied.
+# agent, each defaulting to AGENT_DEFAULT_MODELS[key] when not supplied.
 AGENT_KEYS = (
     "map_extraction", "generator", "eval", "doctor",
     "rules_doctor", "revision", "judge", "prerequisite",
 )
 
+# Per-agent defaults, used when the caller's `models` dict omits a key. Generator
+# and Map Extraction default to Sonnet 4.6 — observed to produce noticeably fuller
+# curriculum CSVs (100+ rows) than gpt-5.4-mini (which undershoots at <50 rows) —
+# every other agent defaults to gpt-5.4-mini.
+AGENT_DEFAULT_MODELS = {
+    "map_extraction": "anthropic/claude-sonnet-4-6",
+    "generator":       "anthropic/claude-sonnet-4-6",
+    "eval":            "openai/gpt-5.4-mini",
+    "doctor":          "openai/gpt-5.4-mini",
+    "rules_doctor":    "openai/gpt-5.4-mini",
+    "revision":        "openai/gpt-5.4-mini",
+    "judge":           "openai/gpt-5.4-mini",
+    "prerequisite":    "openai/gpt-5.4-mini",
+}
+
 
 def _model_for(models: dict | None, key: str) -> str:
-    return (models or {}).get(key) or DEFAULT_MODEL
+    return (models or {}).get(key) or AGENT_DEFAULT_MODELS.get(key, DEFAULT_MODEL)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
