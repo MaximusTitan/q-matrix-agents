@@ -64,12 +64,28 @@ RULES_CHECK_TOOL = {
         "properties": {
             "passed": {
                 "type": "boolean",
-                "description": "True only if the CSV has zero rule violations.",
+                "description": (
+                    "True if the CSV has zero BLOCKING content violations. Advisory "
+                    "flags (see `flags`) do NOT affect this — never set it false for a flag."
+                ),
             },
             "feedback": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "One entry per violation found. Empty if passed is true.",
+                "description": (
+                    "One entry per BLOCKING content-quality violation only. Empty if none. "
+                    "Do NOT include structural/identifier rules (R-S*, R-F*) — those are "
+                    "verified in code — and do NOT include the advisory flag rules."
+                ),
+            },
+            "flags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Advisory human-review notes for flag-only rules (R-SK4, R-SK7, "
+                    "R-CV3). These NEVER block: list them here, never in `feedback`, "
+                    "and never let them set `passed` to false."
+                ),
             },
         },
         "required": ["passed", "feedback"],
@@ -219,6 +235,88 @@ def validate_rows(rows: list[dict]) -> None:
             "\n".join(errors[:10]) +
             ("\n... (truncated)" if len(errors) > 10 else "")
         )
+
+
+_STRUCT_RULE_BY_COL = {"board": "R-S4", "subject": "R-S5", "grade": "R-S6", "chapter": "R-S8"}
+
+
+def structural_check(
+    raw_csv: str, board: str, subject: str, grade: str, chapter: str, *, cap: int = 10
+) -> list[str]:
+    """
+    Deterministic verdict for the structural + identifier-fidelity rules
+    (R-S1..R-S8, R-F2) of the universal ruleset.
+
+    These are mechanical checks the Check-1 LLM cannot perform reliably: it is never
+    given the input identifiers, so it hedges on R-S4/S5/S6/S8 ("cannot be verified
+    without the user input") and emits false failures. Verifying them in code is exact
+    and free, and lets the LLM focus purely on content-quality rules.
+
+    Args:
+        board, subject, grade, chapter: the identifiers the CSV must match exactly.
+        cap: maximum number of violation strings to return (keeps feedback readable).
+
+    Returns:
+        A list of violation strings — empty if every structural rule passes.
+    """
+    try:
+        rows = parse_csv(raw_csv)
+    except ValueError as e:
+        return [f"R-S1/R-F1: CSV could not be parsed: {e}"]
+
+    violations: list[str] = []
+    columns = set(rows[0].keys())
+
+    # R-S2 / R-F2 — required column names present.
+    missing = REQUIRED_COLUMNS - columns
+    if missing:
+        violations.append(f"R-S2: missing required column(s): {', '.join(sorted(missing))}")
+    # R-S1 — no row has more fields than headers (DictReader buckets extras under None).
+    if None in columns or any(None in row for row in rows):
+        violations.append(
+            "R-S1: one or more rows have more fields than headers "
+            "(an unescaped comma inside a concept/skill)."
+        )
+
+    # R-S3 — no empty required fields.
+    empty = [
+        f"row {i} '{col}'"
+        for i, row in enumerate(rows, start=2)
+        for col in REQUIRED_COLUMNS
+        if col in columns and not (row.get(col) or "").strip()
+    ]
+    if empty:
+        violations.append(f"R-S3: {len(empty)} empty required field(s): {', '.join(empty[:5])}")
+
+    # R-S4/S5/S6/S8 — identifier columns must equal the provided inputs exactly.
+    expected = {"board": board, "subject": subject, "grade": grade, "chapter": chapter}
+    for col, want in expected.items():
+        if col not in columns:
+            continue
+        bad = sorted({
+            (row.get(col) or "").strip()
+            for row in rows
+            if (row.get(col) or "").strip() != want
+        })
+        if bad:
+            violations.append(
+                f"{_STRUCT_RULE_BY_COL[col]}: every '{col}' must equal {want!r}; "
+                f"found non-matching value(s): {', '.join(repr(b) for b in bad[:5])}"
+            )
+
+    # R-S7 — no duplicate concept+skill rows.
+    seen: set[tuple] = set()
+    dupes: list[tuple] = []
+    for row in rows:
+        key = ((row.get("concept") or "").strip(), (row.get("skill") or "").strip())
+        if key in seen:
+            dupes.append(key)
+        seen.add(key)
+    if dupes:
+        shown = "; ".join(f"{c!r}/{s!r}" for c, s in dupes[:5])
+        violations.append(f"R-S7: {len(dupes)} duplicate concept+skill row(s): {shown}")
+
+    return violations[:cap]
 
 
 def csv_to_text(rows: list[dict]) -> str:

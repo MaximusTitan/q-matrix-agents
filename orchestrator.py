@@ -33,9 +33,7 @@ from skills.kb_access import (
     concept_skill_map_exists,
     load_concept_skill_map,
     load_prompt,
-    load_prompt_at_level,
     load_rules,
-    save_prompt,
     append_grade_rule,
     write_escalation,
     save_extraction_guidance,
@@ -49,7 +47,10 @@ from skills.run_record import RunRecordBuilder
 from skills.report_render import render_report_md
 from skills.llm import DEFAULT_MODEL
 
-MAX_ATTEMPTS = 3
+# Safety ceiling on generate→eval cycles. The loop also stops EARLY (before this cap)
+# once the generator stops closing gaps — see the adaptive-budget check in run_pipeline.
+MAX_ATTEMPTS = 6
+MAX_PLATEAU_ROUNDS = 2  # consecutive non-improving attempts before escalating early
 
 # Keys accepted in the `models` dict threaded through run_pipeline(...) — one per
 # agent, each defaulting to AGENT_DEFAULT_MODELS[key] when not supplied.
@@ -58,14 +59,15 @@ AGENT_KEYS = (
     "rules_doctor", "revision", "judge", "prerequisite",
 )
 
-# Per-agent defaults, used when the caller's `models` dict omits a key. Generator
-# and Map Extraction default to Sonnet 4.6 — observed to produce noticeably fuller
-# curriculum CSVs (100+ rows) than gpt-5.4-mini (which undershoots at <50 rows) —
-# every other agent defaults to gpt-5.4-mini.
+# Per-agent defaults, used when the caller's `models` dict omits a key. Map Extraction,
+# Generator, and Eval default to Sonnet 5 — Sonnet produces noticeably fuller curriculum
+# CSVs (100+ rows) than gpt-5.4-mini (which undershoots at <50 rows), and the eval gate
+# needs a strong model to judge content rules reliably — every other agent defaults to
+# gpt-5.4-mini.
 AGENT_DEFAULT_MODELS = {
-    "map_extraction": "anthropic/claude-sonnet-4-6",
-    "generator":       "anthropic/claude-sonnet-4-6",
-    "eval":            "openai/gpt-5.4-mini",
+    "map_extraction": "anthropic/claude-sonnet-5",
+    "generator":       "anthropic/claude-sonnet-5",
+    "eval":            "anthropic/claude-sonnet-5",
     "doctor":          "openai/gpt-5.4-mini",
     "rules_doctor":    "openai/gpt-5.4-mini",
     "revision":        "openai/gpt-5.4-mini",
@@ -799,7 +801,6 @@ def run_pipeline(
     current_csv           = None
     current_input_type    = None
     eval_result           = None
-    revision_occurred     = False
     attempt               = 0
 
     # ── Structured run record ───────────────────────────────────────────────────
@@ -807,9 +808,19 @@ def run_pipeline(
     # and is persisted (latest-only) for BOTH passing and escalated runs.
     builder = RunRecordBuilder(board, subject, grade, chapter, date.today().isoformat())
 
-    # ── Check-2-only path state ────────────────────────────────────────────────
+    # ── Ephemeral revision state ────────────────────────────────────────────────
+    # The revised prompt is threaded through the run IN MEMORY only — never written to
+    # the shared prompt library — so one chapter's revisions can't contaminate its
+    # siblings (or race a concurrent batch), and every chapter starts from the same clean
+    # read-only seed. working_prompt seeds from the library on attempt 1 and becomes the
+    # previous cycle's revised prompt thereafter.
     check2_only_revisions = 0     # drives subject(1st) → grade(2nd) specialization degree
-    forced_level          = None  # forces the NEXT generation to a specific prompt level
+    working_prompt        = None  # generation guidance for the current attempt (in-memory)
+    working_input_type    = None  # logical level label for working_prompt
+    prev_csv              = None  # previous attempt's CSV — fed back for edit-in-place regen
+    prev_feedback         = None  # its eval violations, telling the generator what to fix
+    prev_gap_count        = None  # total unresolved gaps last attempt — drives adaptive budget
+    plateau_rounds        = 0     # consecutive attempts with no gap reduction
     passing_candidates    = []    # every CSV that passed BOTH checks (generated + doctored)
 
     def _escalate_generation_failure(err: Exception) -> dict:
@@ -848,10 +859,11 @@ def run_pipeline(
         attempt += 1
         print(f"\n── Attempt {attempt}/{MAX_ATTEMPTS} ──────────────────────────────────────")
 
-        if forced_level is None:
-            prompt_snapshot, _ = load_prompt(board, subject, grade)
-        else:
-            prompt_snapshot, _ = load_prompt_at_level(board, subject, grade, forced_level)
+        # Attempt 1 seeds from the read-only prompt library; every later attempt reuses the
+        # in-memory revised prompt from the previous cycle. Nothing is written to disk.
+        if working_prompt is None:
+            working_prompt, working_input_type = load_prompt(board, subject, grade)
+        prompt_snapshot = working_prompt
 
         # ── Map Extraction (pre-cycle, runs once before attempt 1 if no map exists) ──
         gen_result = None
@@ -872,6 +884,9 @@ def run_pipeline(
                 )
                 future_gen = executor.submit(
                     run_generator, board, subject, grade, chapter,
+                    prompt_override=working_prompt,
+                    input_type_override=working_input_type,
+                    previous_csv=prev_csv, feedback=prev_feedback,
                     model=_model_for(models, "generator"),
                 )
                 map_result = future_map.result()
@@ -917,13 +932,15 @@ def run_pipeline(
             # model kept returning prose). Escalate gracefully instead of crashing.
             try:
                 gen_result = run_generator(
-                    board, subject, grade, chapter, forced_level=forced_level,
+                    board, subject, grade, chapter,
+                    prompt_override=working_prompt,
+                    input_type_override=working_input_type,
+                    previous_csv=prev_csv, feedback=prev_feedback,
                     model=_model_for(models, "generator"),
                 )
             except (ValueError, FileNotFoundError) as e:
                 return _escalate_generation_failure(e)
 
-        forced_level       = None  # consumed — each forcing applies to exactly one regeneration
         current_csv        = gen_result["csv"]
         current_input_type = gen_result["input_type"]
 
@@ -1090,11 +1107,35 @@ def run_pipeline(
                 print(f"[orchestrator] Rules-doctored CSV from attempt {attempt} "
                       f"passed both checks — added as candidate")
 
-        if attempt == MAX_ATTEMPTS:
+        # ── Adaptive budget ─────────────────────────────────────────────────────
+        # Keep going while the generator is still closing gaps; stop early once it
+        # plateaus (no reduction for MAX_PLATEAU_ROUNDS attempts) so a stuck chapter
+        # doesn't burn the whole ceiling. Any doctor candidate already collected still
+        # wins in post-loop selection, so an early stop never discards a pass.
+        gap_count = (
+            len(c1.get("feedback", []))
+            + len(c2.get("missing_concepts", []))
+            + len(c2.get("missing_skills", []))
+        )
+        if prev_gap_count is not None and gap_count >= prev_gap_count:
+            plateau_rounds += 1
+        else:
+            plateau_rounds = 0
+        prev_gap_count = gap_count
+
+        if attempt >= MAX_ATTEMPTS or plateau_rounds >= MAX_PLATEAU_ROUNDS:
+            if plateau_rounds >= MAX_PLATEAU_ROUNDS and attempt < MAX_ATTEMPTS:
+                print(f"[orchestrator] Adaptive stop — no gap reduction for "
+                      f"{plateau_rounds} attempt(s) (gaps stuck at {gap_count})")
             break
 
         # ── Revise ────────────────────────────────────────────────────────────
         feedback = _collect_feedback(c1, c2)
+
+        # Carry this attempt's CSV + its violations into the next generation so the
+        # generator revises its own output in place rather than regenerating blind.
+        prev_csv      = current_csv
+        prev_feedback = feedback
 
         if current_input_type == "cold_start":
             prompt_to_revise = (
@@ -1106,12 +1147,12 @@ def run_pipeline(
 
         if check2_only and doctored_this_attempt is not None:
             # ── Branch B — Check-2-only: subject-first specialization ladder ────
-            # Use the doctored CSV as a worked reference and write a generalized
+            # Use the doctored CSV as a worked reference and produce a generalized
             # prompt whose degree escalates: 1st check-2-only revision → subject,
-            # 2nd → grade. Force the next generation to that exact level.
+            # 2nd → grade. The revised prompt drives the next generation in-memory.
             check2_only_revisions += 1
-            degree    = "subject" if check2_only_revisions == 1 else "grade"
-            save_mode = "base_prompt" if degree == "subject" else "grade_prompt"
+            degree      = "subject" if check2_only_revisions == 1 else "grade"
+            level_label = "base_prompt" if degree == "subject" else "grade_prompt"
 
             # A doctored CSV that REGRESSED coverage (broke prior matches) is a worse
             # reference than the generation it came from — fall back to current_csv so
@@ -1141,9 +1182,8 @@ def run_pipeline(
                 human_feedback=human_feedback if attempt == 1 else None,
                 model=revision_model,
             )
-            save_prompt(board, subject, revised, mode=save_mode, grade=grade)
-            revision_occurred = True
-            forced_level      = save_mode  # next generation must use this exact level
+            working_prompt     = revised          # ephemeral — drives the next attempt only
+            working_input_type = level_label
             builder.add_revision(
                 attempt=attempt, usage=revision_usage, cost_usd=revision_cost, model=revision_model
             )
@@ -1152,7 +1192,7 @@ def run_pipeline(
                 "agent": "Revision",
                 "output": {
                     "mode":           degree,
-                    "save_mode":      save_mode,
+                    "save_mode":      level_label,
                     "prompt_length":  len(revised),
                     "revised_prompt": revised,
                     "usage":          revision_usage,
@@ -1160,11 +1200,11 @@ def run_pipeline(
                     "model":          revision_model,
                 },
             })
-            print(f"[orchestrator] Saved revised prompt ({save_mode}); "
-                  f"forcing next generation to '{forced_level}'")
+            print(f"[orchestrator] Revised prompt held in-memory (degree={degree}); "
+                  f"drives the next generation only")
 
         else:
-            # ── Branch A — check1 failed or both failed (UNCHANGED behavior) ────
+            # ── Branch A — check1 failed or both failed ─────────────────────────
             failed_check = _failed_check_label(c1["passed"], c2["passed"])
             mode         = _revision_mode(current_input_type, c1["passed"], c2["passed"])
 
@@ -1184,9 +1224,9 @@ def run_pipeline(
                 model=revision_model,
             )
 
-            save_mode = "grade_prompt" if mode == "grade" else "base_prompt"
-            save_prompt(board, subject, revised, mode=save_mode, grade=grade)
-            revision_occurred = True
+            level_label        = "grade_prompt" if mode == "grade" else "base_prompt"
+            working_prompt     = revised          # ephemeral — drives the next attempt only
+            working_input_type = level_label
             builder.add_revision(
                 attempt=attempt, usage=revision_usage, cost_usd=revision_cost, model=revision_model
             )
@@ -1195,7 +1235,7 @@ def run_pipeline(
                 "agent": "Revision",
                 "output": {
                     "mode":           mode,
-                    "save_mode":      save_mode,
+                    "save_mode":      level_label,
                     "prompt_length":  len(revised),
                     "revised_prompt": revised,
                     "usage":          revision_usage,
@@ -1203,18 +1243,11 @@ def run_pipeline(
                     "model":          revision_model,
                 },
             })
-            print(f"[orchestrator] Saved revised prompt ({save_mode})")
+            print(f"[orchestrator] Revised prompt held in-memory (mode={mode})")
 
     # ── Post-loop selection ─────────────────────────────────────────────────────
     c1 = eval_result["check1"]
     c2 = eval_result["check2"]
-    generated_passed = c1["passed"] and c2["passed"]
-
-    # Learn a reusable base_prompt from a clean cold-start generated pass (unchanged).
-    if generated_passed and current_input_type == "cold_start" and not revision_occurred:
-        universal, _ = load_prompt(board, subject, grade)
-        save_prompt(board, subject, universal, mode="base_prompt")
-        print("[orchestrator] Saved universal_rules as base_prompt.md")
 
     if passing_candidates:
         if len(passing_candidates) == 1:

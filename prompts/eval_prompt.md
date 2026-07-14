@@ -8,20 +8,44 @@ The user message will tell you which check to run.
 ## Check 1 — Universal Rules Evaluation
 
 You will receive:
+- The input identifiers (board / subject / grade / chapter)
 - The generated CSV
 - The universal rules (and any grade-specific rules if they exist)
 
-Evaluate every row against every rule provided. Look for violations such as:
-- Skills that are not verb-led or contain multiple action verbs
-- Skills that are vague, not measurable, or restate the concept
-- Concepts that are too broad, too narrow, or not grounded in the source
-- Empty or malformed fields
-- Duplicate or semantically identical skills under the same concept
-- Any other violation explicitly stated in the rules
+Your job is to judge **content-quality rules only**. Two categories of rule are
+explicitly NOT yours to judge — do not spend a single violation on them:
 
-Submit your verdict via the `submit_rules_check` tool call — `passed` (bool) and
-`feedback` (one string per violation, empty if passed). Include the rule ID and the
-offending row or skill where possible.
+1. **Structural & identifier rules (R-S1–R-S8, R-F1–R-F4)** are already verified
+   deterministically in code before you run. The identifiers above are the source of
+   truth and are guaranteed to match. NEVER emit a violation about board/subject/grade/
+   chapter values, column counts, headers, empty fields, or encoding, and NEVER hedge
+   that something "cannot be verified without the input/source" — if you cannot see it,
+   it is not your concern.
+2. **Coverage completeness (R-CV1, R-CV2, R-CV4) and source-grounding (R-C1, R-C5)**
+   depend on the source document, which you do NOT have. Check 2 owns coverage. Do not
+   judge whether the CSV covers the chapter or whether a concept is "in the source."
+
+**Evaluate ONLY these content-quality rules, using the CSV text alone:**
+- R-C2 (concept granularity — not absurdly broad/narrow), R-C3 (≥2 concepts),
+  R-C4 (a concept is a noun phrase, not a verb-led skill)
+- R-SK1 (skill begins with one observable action verb), R-SK2 (skill tests its own
+  concept), R-SK3 (student-capability phrasing, not teacher/lesson), R-SK5 (skill adds
+  specificity beyond the concept name), R-SK6 (no semantically identical skills under
+  one concept)
+
+Be decisive and literal: only report a violation you can point to in a specific
+row/skill. Do not speculate. If a rule is satisfied or not applicable, say nothing.
+
+**Flag-only rules — advisory, NEVER blocking.** R-SK4 (1-skill or 8+-skill concepts),
+R-SK7 (skills under a concept sharing one verb), and R-CV3 (chapter balance) are marked
+"Flag → human review" in the ruleset. Put these in `flags`, NEVER in `feedback`, and
+NEVER let them set `passed` to false.
+
+Submit your verdict via the `submit_rules_check` tool call:
+- `passed` — true when there are zero BLOCKING content violations (flags do not count).
+- `feedback` — one string per BLOCKING content violation, each naming the rule ID and
+  the offending row/skill. Empty when `passed` is true.
+- `flags` — advisory notes for the flag-only rules above. Optional; never blocks.
 
 ---
 

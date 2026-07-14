@@ -20,9 +20,9 @@ import { AGENT_KEYS, type AgentKey, type ModelInfo, type RunFormValues, type Sta
 
 // Keep in sync with orchestrator.py::AGENT_DEFAULT_MODELS.
 const AGENT_DEFAULT_MODELS: Record<AgentKey, string> = {
-  map_extraction: "anthropic/claude-sonnet-4-6",
-  generator: "anthropic/claude-sonnet-4-6",
-  eval: "openai/gpt-5.4-mini",
+  map_extraction: "anthropic/claude-sonnet-5",
+  generator: "anthropic/claude-sonnet-5",
+  eval: "anthropic/claude-sonnet-5",
   doctor: "openai/gpt-5.4-mini",
   rules_doctor: "openai/gpt-5.4-mini",
   revision: "openai/gpt-5.4-mini",

@@ -25,7 +25,7 @@ _client = openai.OpenAI(
     base_url="https://ai-gateway.vercel.sh/v1",
 )
 
-DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
+DEFAULT_MODEL = "anthropic/claude-sonnet-5"
 MAX_TOKENS    = 8096
 MAX_RETRIES   = 3
 RETRY_DELAY   = 5  # seconds
@@ -99,7 +99,7 @@ def call_llm(system_prompt: str, user_content: str, model: str = DEFAULT_MODEL) 
     Args:
         system_prompt: The agent's system-level instructions.
         user_content:  The content the agent should act on.
-        model:         Gateway model id, e.g. "anthropic/claude-sonnet-4-6",
+        model:         Gateway model id, e.g. "anthropic/claude-sonnet-5",
                        "openai/gpt-5-mini", "google/gemini-2.5-flash".
 
     Returns:

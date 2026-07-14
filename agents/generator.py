@@ -20,7 +20,7 @@ Skills used:
 
 import json
 import os
-from skills.kb_access import load_curriculum_docs, load_prompt, load_prompt_at_level
+from skills.kb_access import load_curriculum_docs, load_prompt
 from skills.llm import call_llm_structured, add_usage, DEFAULT_MODEL
 from skills.csv_utils import CONCEPT_SKILL_ROWS_TOOL, rows_from_pairs, validate_rows, csv_to_text
 
@@ -56,27 +56,40 @@ class GenerationFailedError(ValueError):
 
 def run(
     board: str, subject: str, grade: str, chapter: str,
-    forced_level: str = None, model: str = DEFAULT_MODEL,
+    prompt_override: str = None, input_type_override: str = None,
+    previous_csv: str = None, feedback: list[str] = None,
+    model: str = DEFAULT_MODEL,
 ) -> dict:
     """
     Generate a curriculum CSV for a given chapter.
 
     Prompt resolution:
-        - forced_level is None (default): kb_access.load_prompt resolves by file existence
+        - prompt_override is None (default): kb_access.load_prompt resolves by file existence
             1. grade-specific prompt  → input_type: grade_prompt
             2. subject base prompt    → input_type: base_prompt
             3. cold start (rules)     → input_type: cold_start
-        - forced_level set: load that EXACT level via load_prompt_at_level. Used by the
-          orchestrator to honour the subject→grade specialization ladder regardless of which
-          prompt files already exist on disk.
+        - prompt_override set: use that exact text as the generation guidance, bypassing the
+          prompt library entirely. The orchestrator drives its ephemeral revision loop this
+          way — it passes the seed prompt on attempt 1 and the in-memory revised prompt on
+          later attempts, so nothing is ever loaded from, or written to, the shared prompt
+          library mid-run.
 
     Args:
-        board:        Education board (e.g. "CBSE")
-        subject:      Subject name (e.g. "Science")
-        grade:        Grade level (e.g. "Grade8")
-        chapter:      Chapter folder name (e.g. "Chapter10_Sound")
-        forced_level: Optional — one of "grade_prompt", "base_prompt", "cold_start".
-                      When set, bypasses normal resolution and loads exactly that level.
+        board:               Education board (e.g. "CBSE")
+        subject:             Subject name (e.g. "Science")
+        grade:               Grade level (e.g. "Grade8")
+        chapter:             Chapter folder name (e.g. "Chapter10_Sound")
+        prompt_override:     Optional — exact generation-guidance text to use verbatim.
+        input_type_override: Optional label recorded for prompt_override (e.g. "grade_prompt",
+                             "base_prompt", "cold_start"); defaults to "revised" when omitted.
+        previous_csv:        Optional — the CSV this run produced on the prior attempt. When
+                             set (attempts 2+), the model REVISES it in place rather than
+                             regenerating blind: it keeps every row that was fine and changes
+                             only what failed, so coverage improves monotonically instead of
+                             the whack-a-mole where each fresh generation drops other rows.
+        feedback:            Optional — the specific eval violations for previous_csv (the
+                             failing rules + missing concepts/skills) telling the model exactly
+                             what to fix.
 
     Returns:
         Dict with keys:
@@ -95,18 +108,38 @@ def run(
     curriculum_docs = load_curriculum_docs(board, subject, grade)
     print(f"[generator] Loaded {len(curriculum_docs)} chars of curriculum content")
 
-    # Step 2 — Load prompt (forced level, or best available)
-    if forced_level is None:
-        prompt_content, input_type = load_prompt(board, subject, grade)
+    # Step 2 — Resolve the generation guidance. When the caller supplies prompt_override
+    # (the orchestrator's ephemeral revision loop), use it verbatim; otherwise fall back to
+    # the best-available prompt on disk.
+    if prompt_override is not None:
+        prompt_content = prompt_override
+        input_type = input_type_override or "revised"
+        print(f"[generator] Using caller-supplied prompt (input_type: {input_type})")
     else:
-        prompt_content, input_type = load_prompt_at_level(board, subject, grade, forced_level)
-        print(f"[generator] Forced prompt level: {forced_level}")
-    print(f"[generator] Using input_type: {input_type}")
+        prompt_content, input_type = load_prompt(board, subject, grade)
+        print(f"[generator] Using input_type: {input_type}")
 
     # Step 3 — Build user message
-    # The system prompt contains generation instructions.
-    # The prompt_content (whether a saved prompt or universal rules)
-    # is injected as additional guidance in the user message.
+    # The system prompt contains generation instructions. prompt_content (a saved prompt
+    # or the universal rules) is injected as guidance. On a retry, previous_csv + feedback
+    # turn this into an edit-in-place task: revise the prior CSV, don't regenerate blind.
+    revision_section = ""
+    if previous_csv:
+        print(f"[generator] Edit-in-place: revising previous CSV ({len(feedback or [])} issue(s) to fix)")
+        issues = "\n".join(f"- {f}" for f in (feedback or [])) or "- (no specific feedback captured)"
+        revision_section = f"""
+
+--- YOUR PREVIOUS CSV FOR THIS CHAPTER (revise this — do NOT start from scratch) ---
+{previous_csv}
+
+--- WHAT FAILED IN IT (fix ONLY these) ---
+{issues}
+
+Revise the CSV above: keep every concept and skill row that was NOT flagged, preserving
+its exact wording so its coverage is not lost, and change or add only what is needed to
+resolve the issues listed. Do not drop or reword rows that were already correct.
+"""
+
     user_content = f"""board: {board}
 subject: {subject}
 grade: {grade}
@@ -114,7 +147,7 @@ chapter: {chapter}
 
 --- GENERATION GUIDANCE ---
 {prompt_content}
-
+{revision_section}
 --- CURRICULUM DOCUMENTATION ---
 {curriculum_docs}"""
 
