@@ -78,6 +78,10 @@ Extras did not cause the coverage failure, so be conservative — only remove cl
 - Call the `submit_concept_skill_rows` tool with the COMPLETE corrected set of rows: every
   row you keep unchanged, every row you edit, and every row you add. A row you leave out of
   the call is a row you are deleting — there is no partial or diff-style submission.
+- Reproduce every row you are NOT deliberately editing character-for-character, exactly as it
+  appears in the failing CSV. The coverage re-check is judged fresh each time, so rewording an
+  already-matched row — even slightly — can drop its match and REGRESS coverage. Only the rows
+  you split, add, or prune should differ from the failing CSV.
 - Each row is a `{concept, skill}` pair only. Do not include board/subject/grade/chapter —
   those four identifier columns are not part of the tool call; they are attached automatically
   after you submit.

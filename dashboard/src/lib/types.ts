@@ -16,7 +16,7 @@ export interface ModelPricing {
 }
 
 export interface ModelInfo {
-  id: string; // e.g. "anthropic/claude-sonnet-4-6", "openai/gpt-5-mini"
+  id: string; // e.g. "anthropic/claude-sonnet-5", "openai/gpt-5-mini"
   name: string;
   owned_by: string;
   context_window: number;

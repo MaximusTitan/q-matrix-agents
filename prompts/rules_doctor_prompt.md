@@ -46,7 +46,10 @@ items"). When you fix such a row, KEEP the same underlying concept/skill so it s
 same expected item — only correct the wording/format. Never delete a row that is the sole cover
 for an expected concept or skill. If a violating row carries coverage, rephrase it; do not drop it.
 
-Leave every already-compliant row untouched.
+Leave every already-compliant row untouched — reproduce it character-for-character, exactly as it
+appears in the failing CSV. Re-typing a compliant row with different wording can drop a coverage
+match and REGRESS Check 2, which is the single most common way this repair fails. Only the rows
+named in the violations should differ from the failing CSV.
 
 ---
 

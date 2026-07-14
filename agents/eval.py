@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from skills.kb_access import load_rules, load_concept_skill_map
 from skills.llm import call_llm_structured, add_usage, DEFAULT_MODEL
-from skills.csv_utils import RULES_CHECK_TOOL
+from skills.csv_utils import RULES_CHECK_TOOL, structural_check
 from skills.diff import diff_full
 
 _PROMPT_PATH = os.path.join(
@@ -36,17 +36,39 @@ with open(_PROMPT_PATH, "r", encoding="utf-8") as f:
     SYSTEM_PROMPT = f.read()
 
 
-def run_check1(csv: str, board: str, subject: str, grade: str, model: str = DEFAULT_MODEL) -> dict:
+def run_check1(
+    csv: str, board: str, subject: str, grade: str, chapter: str,
+    model: str = DEFAULT_MODEL,
+) -> dict:
     """
     Check 1 — Universal rules compliance.
 
+    Structural + identifier-fidelity rules (R-S*, R-F2) are verified deterministically
+    in code (``structural_check``) — the LLM is never given the input identifiers, so
+    asking it to judge them produced false "cannot verify" failures. The LLM judges only
+    content-quality rules, and the flag-only rules (R-SK4/R-SK7/R-CV3) are returned as
+    non-blocking ``flags`` rather than failures, per universal_rules Appendix A.
+
+    ``passed`` is derived from BLOCKING items only: a run passes Check 1 when there are
+    no structural violations and the LLM reports no content violations. Advisory flags
+    never block.
+
     Returns:
-        Dict with keys: passed (bool), feedback (list)
+        Dict with keys: passed (bool), feedback (list), flags (list)
     """
     print(f"[eval] Running Check 1 — universal rules")
     rules = load_rules(board, subject, grade)
 
+    # Mechanical rules first — exact, free, and impossible for the LLM to hedge on.
+    structural_violations = structural_check(csv, board, subject, grade, chapter)
+
     user_content = f"""CHECK: 1
+
+INPUT IDENTIFIERS (already verified in code — do NOT re-evaluate board/subject/grade/chapter):
+board: {board}
+subject: {subject}
+grade: {grade}
+chapter: {chapter}
 
 --- RULES ---
 {rules}
@@ -56,11 +78,21 @@ def run_check1(csv: str, board: str, subject: str, grade: str, model: str = DEFA
 
     result, usage, cost_usd = call_llm_structured(SYSTEM_PROMPT, user_content, RULES_CHECK_TOOL, model=model)
 
-    passed   = result.get("passed", False)
-    feedback = result.get("feedback", [])
+    llm_feedback = result.get("feedback", []) or []
+    flags        = result.get("flags", []) or []
 
-    print(f"[eval] Check 1: {'PASSED' if passed else 'FAILED'} ({len(feedback)} issue(s))")
-    return {"passed": passed, "feedback": feedback, "usage": usage, "cost_usd": cost_usd, "model": model}
+    # Blocking = code-verified structural violations + LLM content violations. `passed`
+    # is derived from presence of blocking items, not the model's boolean — a cautious
+    # model that sets passed=false while listing only flags no longer fails the run.
+    feedback = structural_violations + llm_feedback
+    passed   = not feedback
+
+    print(f"[eval] Check 1: {'PASSED' if passed else 'FAILED'} "
+          f"({len(feedback)} blocking, {len(flags)} flag(s))")
+    return {
+        "passed": passed, "feedback": feedback, "flags": flags,
+        "usage": usage, "cost_usd": cost_usd, "model": model,
+    }
 
 
 def run_check2(
@@ -105,7 +137,7 @@ def run(
     print(f"[eval] Running Check 1 and Check 2 in parallel...")
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        future_c1 = executor.submit(run_check1, csv, board, subject, grade, model)
+        future_c1 = executor.submit(run_check1, csv, board, subject, grade, chapter, model)
         future_c2 = executor.submit(run_check2, csv, board, subject, grade, chapter, model)
 
         check1 = future_c1.result()
