@@ -87,6 +87,47 @@ def _first_model(entries: list[dict]) -> str | None:
     return None
 
 
+def record_models(rec: dict) -> set[str]:
+    """
+    Every distinct model identifier touched by one run record, across every agent
+    that participated (generator, eval checks, doctor/rules-doctor, revision,
+    judge, map extraction, prerequisite).
+
+    Used to answer "was this model involved in producing this chapter" for the
+    KB analytics model filter — unlike compute_model_performance, this doesn't
+    need pass/cost/usage per agent, just the flat set of models involved.
+    """
+    models: set[str] = set()
+    attempts = rec.get("attempts") or []
+
+    for a in attempts:
+        gen = a.get("generator")
+        if gen:
+            if gen.get("model"):
+                models.add(gen["model"])
+            for check_key in ("check1", "check2"):
+                check = gen.get(check_key)
+                if check and check.get("model"):
+                    models.add(check["model"])
+        rev = a.get("revision")
+        if rev and rev.get("model"):
+            models.add(rev["model"])
+        for d in a.get("doctors") or []:
+            if d.get("model"):
+                models.add(d["model"])
+
+    judge = rec.get("judge")
+    if judge and judge.get("model"):
+        models.add(judge["model"])
+
+    pipeline_agents = rec.get("pipeline_agents") or {}
+    for entry in pipeline_agents.values():
+        if entry and entry.get("model"):
+            models.add(entry["model"])
+
+    return models
+
+
 def compute_model_performance(records: list[dict]) -> dict:
     """
     Args:

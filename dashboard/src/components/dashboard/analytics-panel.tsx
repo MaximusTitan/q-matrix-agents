@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight, Copy, Download, X } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { copyCsv, downloadCsv } from "@/lib/csv-actions";
-import { fetchRunCsv } from "@/lib/api";
+import { fetchRunCsv, type AnalyticsFilters } from "@/lib/api";
 import { doctorStepsFromRecord } from "@/lib/doctor-trail";
 import { sumUsage } from "@/lib/usage";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,7 @@ import { CheckStatus, CheckSummary } from "./shared/check-summary";
 import { CsvEntry } from "./shared/csv-entry";
 import { DoctorTrail } from "./shared/doctor-trail";
 import { ModelPerformancePanel } from "./model-performance-panel";
+import { AnalyticsFilterBar, type AnalyticsFolderOptions } from "./analytics-filter-bar";
 import { UsageBadge } from "./shared/usage-badge";
 
 export interface SelectedChapter {
@@ -37,6 +38,10 @@ interface AnalyticsPanelProps {
   loading: boolean;
   error: string | null;
   modelPerformance: ModelPerformanceResponse | null;
+  filters: AnalyticsFilters;
+  onFiltersChange: (filters: AnalyticsFilters) => void;
+  folderOptions: AnalyticsFolderOptions;
+  allModelOptions: string[];
   selected: SelectedChapter | null;
   detail: ChapterAnalytics | null;
   detailLoading: boolean;
@@ -721,6 +726,10 @@ export function AnalyticsPanel({
   loading,
   error,
   modelPerformance,
+  filters,
+  onFiltersChange,
+  folderOptions,
+  allModelOptions,
   selected,
   detail,
   detailLoading,
@@ -736,53 +745,65 @@ export function AnalyticsPanel({
   if (error) {
     return <div className="p-6 text-sm text-[var(--qm-red)]">{error}</div>;
   }
-  if (!data || !data.groups.length) {
-    return (
-      <div className="p-6 text-sm text-muted-foreground">
-        No chapters have been run through the pipeline yet.
-      </div>
-    );
-  }
+
+  const hasActiveFilter =
+    !!filters.board || !!filters.subject || !!filters.grade || (filters.models?.length ?? 0) > 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6 p-6">
-      <SummaryRow data={data} />
-      <ModelPerformancePanel data={modelPerformance} />
-      <div className="flex min-h-0 flex-1 gap-6">
-        {/* Grouped tree */}
-        <div
-          className={cn(
-            "min-h-0 flex-1",
-            selected && "hidden lg:block lg:max-w-md lg:shrink-0"
-          )}
-        >
-          <ScrollArea className="h-full">
-            <div className="space-y-3 pr-2">
-              {data.groups.map((g) => (
-                <GroupSection
-                  key={`${g.board}/${g.subject}/${g.grade}`}
-                  group={g}
-                  selected={selected}
-                  onSelect={onSelect}
-                />
-              ))}
-            </div>
-          </ScrollArea>
+      <AnalyticsFilterBar
+        filters={filters}
+        onFiltersChange={onFiltersChange}
+        folderOptions={folderOptions}
+        allModelOptions={allModelOptions}
+      />
+      {!data || !data.groups.length ? (
+        <div className="text-sm text-muted-foreground">
+          {hasActiveFilter
+            ? "No chapters match the selected filters."
+            : "No chapters have been run through the pipeline yet."}
         </div>
+      ) : (
+        <>
+          <SummaryRow data={data} />
+          <ModelPerformancePanel data={modelPerformance} />
+          <div className="flex min-h-0 flex-1 gap-6">
+            {/* Grouped tree */}
+            <div
+              className={cn(
+                "min-h-0 flex-1",
+                selected && "hidden lg:block lg:max-w-md lg:shrink-0"
+              )}
+            >
+              <ScrollArea className="h-full">
+                <div className="space-y-3 pr-2">
+                  {data.groups.map((g) => (
+                    <GroupSection
+                      key={`${g.board}/${g.subject}/${g.grade}`}
+                      group={g}
+                      selected={selected}
+                      onSelect={onSelect}
+                    />
+                  ))}
+                </div>
+              </ScrollArea>
+            </div>
 
-        {/* Drill-down */}
-        {selected && (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <DetailView
-              selected={selected}
-              detail={detail}
-              loading={detailLoading}
-              error={detailError}
-              onClear={onClear}
-            />
+            {/* Drill-down */}
+            {selected && (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <DetailView
+                  selected={selected}
+                  detail={detail}
+                  loading={detailLoading}
+                  error={detailError}
+                  onClear={onClear}
+                />
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }

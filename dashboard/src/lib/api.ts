@@ -90,16 +90,36 @@ export async function fetchKbChapters(board: string, subject: string, grade: str
   return data.chapters;
 }
 
-export async function fetchAnalytics(): Promise<AnalyticsResponse> {
-  const res = await fetch(`${API_BASE}/kb/analytics`);
+export interface AnalyticsFilters {
+  board?: string;
+  subject?: string;
+  grade?: string;
+  models?: string[];
+}
+
+function analyticsFilterParams(filters?: AnalyticsFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filters?.board) params.set("board", filters.board);
+  if (filters?.subject) params.set("subject", filters.subject);
+  if (filters?.grade) params.set("grade", filters.grade);
+  for (const m of filters?.models ?? []) params.append("model", m);
+  return params;
+}
+
+export async function fetchAnalytics(filters?: AnalyticsFilters): Promise<AnalyticsResponse> {
+  const qs = analyticsFilterParams(filters).toString();
+  const res = await fetch(`${API_BASE}/kb/analytics${qs ? `?${qs}` : ""}`);
   if (!res.ok) {
     throw new Error(`Failed to fetch analytics: ${res.status}`);
   }
   return res.json() as Promise<AnalyticsResponse>;
 }
 
-export async function fetchModelPerformance(): Promise<ModelPerformanceResponse> {
-  const res = await fetch(`${API_BASE}/kb/analytics/models`);
+export async function fetchModelPerformance(
+  filters?: AnalyticsFilters
+): Promise<ModelPerformanceResponse> {
+  const qs = analyticsFilterParams(filters).toString();
+  const res = await fetch(`${API_BASE}/kb/analytics/models${qs ? `?${qs}` : ""}`);
   if (!res.ok) {
     throw new Error(`Failed to fetch model performance: ${res.status}`);
   }

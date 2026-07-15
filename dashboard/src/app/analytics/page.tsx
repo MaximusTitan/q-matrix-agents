@@ -8,8 +8,18 @@ import {
   AnalyticsPanel,
   type SelectedChapter,
 } from "@/components/dashboard/analytics-panel";
-import { fetchAnalytics, fetchChapterAnalytics, fetchModelPerformance } from "@/lib/api";
+import {
+  fetchAnalytics,
+  fetchChapterAnalytics,
+  fetchModelPerformance,
+  type AnalyticsFilters,
+} from "@/lib/api";
+import type { AnalyticsFolderOptions } from "@/components/dashboard/analytics-filter-bar";
 import type { AnalyticsResponse, ChapterAnalytics, ModelPerformanceResponse } from "@/lib/types";
+
+function uniqueSorted(values: string[]): string[] {
+  return Array.from(new Set(values)).sort();
+}
 
 function AnalyticsHeader() {
   return (
@@ -46,6 +56,21 @@ function AnalyticsView() {
   const [error, setError] = useState<string | null>(null);
   const [modelPerformance, setModelPerformance] = useState<ModelPerformanceResponse | null>(null);
 
+  // Global filter bar — board/subject/grade/model, each optional and
+  // independent — drives both /kb/analytics and /kb/analytics/models, so the
+  // summary cards, model performance, and the grouped chapter tree all narrow
+  // to the same selection together.
+  const [filters, setFilters] = useState<AnalyticsFilters>({});
+
+  // Filter option lists — captured once from the unfiltered dashboard so they
+  // never shrink as filters are applied.
+  const [folderOptions, setFolderOptions] = useState<AnalyticsFolderOptions>({
+    boards: [],
+    subjects: [],
+    grades: [],
+  });
+  const [allModelOptions, setAllModelOptions] = useState<string[]>([]);
+
   // Detail state is keyed to the selection it belongs to, so a stale fetch or a
   // deselect never shows the wrong chapter. Loading/error are derived, not stored,
   // which keeps the fetch effects free of synchronous setState.
@@ -65,9 +90,9 @@ function AnalyticsView() {
     return null;
   }, [params]);
 
-  const loadAnalytics = useCallback(async () => {
+  const loadAnalytics = useCallback(async (f: AnalyticsFilters) => {
     try {
-      const res = await fetchAnalytics();
+      const res = await fetchAnalytics(f);
       setData(res);
       setError(null);
     } catch (e) {
@@ -77,18 +102,41 @@ function AnalyticsView() {
 
   // Model Performance is a supplementary rollup — a failure here shouldn't block
   // the main analytics view, so it's swallowed rather than surfaced as `error`.
-  const loadModelPerformance = useCallback(async () => {
+  const loadModelPerformance = useCallback(async (f: AnalyticsFilters) => {
     try {
-      setModelPerformance(await fetchModelPerformance());
+      setModelPerformance(await fetchModelPerformance(f));
     } catch {
       setModelPerformance(null);
     }
   }, []);
 
   useEffect(() => {
-    loadAnalytics();
-    loadModelPerformance();
-  }, [loadAnalytics, loadModelPerformance]);
+    loadAnalytics(filters);
+  }, [loadAnalytics, filters]);
+
+  useEffect(() => {
+    loadModelPerformance(filters);
+  }, [loadModelPerformance, filters]);
+
+  // Captured exactly once, unfiltered, to seed the filter bar's option lists —
+  // they must never shrink as filters (including their own selections) narrow
+  // the displayed data.
+  useEffect(() => {
+    fetchAnalytics()
+      .then((res) =>
+        setFolderOptions({
+          boards: uniqueSorted(res.groups.map((g) => g.board)),
+          subjects: uniqueSorted(res.groups.map((g) => g.subject)),
+          grades: uniqueSorted(res.groups.map((g) => g.grade)),
+        })
+      )
+      .catch(() => setFolderOptions({ boards: [], subjects: [], grades: [] }));
+    fetchModelPerformance()
+      .then((res) =>
+        setAllModelOptions(Array.from(new Set(res.entries.map((e) => e.model))).sort())
+      )
+      .catch(() => setAllModelOptions([]));
+  }, []);
 
   // Monotonic token so a slow detail fetch can't overwrite a newer selection.
   const detailReqId = useRef(0);
@@ -149,6 +197,10 @@ function AnalyticsView() {
           loading={loading}
           error={error}
           modelPerformance={modelPerformance}
+          filters={filters}
+          onFiltersChange={setFilters}
+          folderOptions={folderOptions}
+          allModelOptions={allModelOptions}
           selected={selected}
           detail={detailForSel}
           detailLoading={detailLoading}

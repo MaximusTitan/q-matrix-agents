@@ -23,7 +23,7 @@ import traceback
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -41,7 +41,7 @@ from orchestrator import (
 )
 from skills.csv_utils import validate_csv_schema, parse_csv
 from skills import kb_access
-from skills.model_stats import compute_model_performance
+from skills.model_stats import compute_model_performance, record_models
 
 app = FastAPI(title="Q-Matrix Dashboard API")
 
@@ -353,10 +353,23 @@ def _analytics_key(board: str, subject: str, grade: str, chapter: str) -> tuple:
 
 
 @app.get("/kb/analytics")
-async def kb_analytics():
+async def kb_analytics(
+    board: str | None = None,
+    subject: str | None = None,
+    grade: str | None = None,
+    model: list[str] | None = Query(None),
+):
     """
     Aggregate pipeline history for every chapter that has been run, grouped by
     board → subject → grade. Reads the KB filesystem live on each request.
+
+    ``board``/``subject``/``grade``/``model`` are optional and independent of
+    each other, mirroring /kb/analytics/models — the same filter bar drives
+    both endpoints so every stat on the page (summary cards, model performance,
+    the grouped chapter tree) reflects one shared selection. ``board``/
+    ``subject``/``grade`` narrow which chapters are considered; ``model``
+    (repeatable) keeps only chapters whose latest run touched one of the
+    selected models on any agent.
     """
     try:
         chapters = kb_access.list_textbook_chapters()
@@ -370,6 +383,16 @@ async def kb_analytics():
             },
             "groups": [],
         }
+
+    if board:
+        chapters = [c for c in chapters if c["board"] == board]
+        escalations = [e for e in escalations if e["board"] == board]
+    if subject:
+        chapters = [c for c in chapters if c["subject"] == subject]
+        escalations = [e for e in escalations if e["subject"] == subject]
+    if grade:
+        chapters = [c for c in chapters if c["grade"] == grade]
+        escalations = [e for e in escalations if e["grade"] == grade]
 
     # Index escalations by normalized key (a chapter may have several across dates).
     esc_by_key: dict[tuple, list[dict]] = {}
@@ -405,6 +428,21 @@ async def kb_analytics():
             first["board"], first["subject"], first["grade"], first["chapter"],
             has_confirmed=False, has_csm=False, escalations=chapter_escs,
         ))
+
+    if model:
+        selected_models = set(model)
+        models_by_key: dict[tuple, set[str]] = {}
+        try:
+            for rec in kb_access.list_all_run_records():
+                key = _analytics_key(rec["board"], rec["subject"], rec["grade"], rec["chapter"])
+                models_by_key.setdefault(key, set()).update(record_models(rec))
+        except Exception:
+            models_by_key = {}
+        def _has_selected_model(e: dict) -> bool:
+            key = _analytics_key(e["board"], e["subject"], e["grade"], e["chapter"])
+            return bool(models_by_key.get(key, set()) & selected_models)
+
+        entries = [e for e in entries if _has_selected_model(e)]
 
     # Group by (board, subject, grade).
     groups_map: dict[tuple, dict] = {}
@@ -469,18 +507,58 @@ def _build_chapter_entry(
 
 
 @app.get("/kb/analytics/models")
-async def model_performance():
+async def model_performance(
+    board: str | None = None,
+    subject: str | None = None,
+    grade: str | None = None,
+    model: list[str] | None = Query(None),
+):
     """
     Model Performance rollup for the analytics dashboard: per-(agent, model) pass/
     fail counts, cost, and token/row averages across every run in the KB (both the
     latest run/ snapshot per chapter and every historical escalations/ snapshot,
     deduped by run_id — see kb_access.list_all_run_records).
+
+    ``board``/``subject``/``grade``/``model`` are optional and independent of each
+    other. ``board``/``subject``/``grade`` narrow the record set to that KB folder
+    level before aggregation (affecting every stat, including totals). ``model``
+    (repeatable, e.g. ``?model=a&model=b``) narrows the per-(agent, model) rows
+    *and* recomputes total cost / distinct-model count / per-provider cost from
+    just those rows, so every stat card tracks the model filter too. "Runs
+    Analyzed" is the one exception — it stays the folder-filtered chapter/run
+    count, since a single run can span several agents each on a different model.
     """
     try:
         records = kb_access.list_all_run_records()
     except Exception:
         records = []
-    return compute_model_performance(records)
+    if board:
+        records = [r for r in records if r.get("board") == board]
+    if subject:
+        records = [r for r in records if r.get("subject") == subject]
+    if grade:
+        records = [r for r in records if r.get("grade") == grade]
+
+    result = compute_model_performance(records)
+    if model:
+        selected = set(model)
+        entries = [e for e in result["entries"] if e["model"] in selected]
+        result["entries"] = entries
+        result["distinct_models"] = len({e["model"] for e in entries})
+        result["total_cost_usd"] = sum(e["total_cost_usd"] for e in entries)
+
+        provider_totals: dict[str, dict] = {}
+        for e in entries:
+            provider = e["model"].split("/", 1)[0]
+            p = provider_totals.setdefault(
+                provider, {"provider": provider, "runs": 0, "total_cost_usd": 0.0}
+            )
+            p["runs"] += e["runs"]
+            p["total_cost_usd"] += e["total_cost_usd"]
+        result["by_provider"] = sorted(
+            provider_totals.values(), key=lambda p: -p["total_cost_usd"]
+        )
+    return result
 
 
 @app.get("/kb/analytics/chapter")

@@ -1107,11 +1107,20 @@ def run_pipeline(
                 print(f"[orchestrator] Rules-doctored CSV from attempt {attempt} "
                       f"passed both checks — added as candidate")
 
+        # ── Stop as soon as ANY candidate passes ────────────────────────────────
+        # The generator passing both checks already breaks above; this catches a
+        # DOCTOR pass. A CSV that clears both checks is shippable, so we stop here
+        # rather than spend more cycles hunting for a marginally cleaner generated
+        # candidate — the checks define the quality bar, not a downstream preference.
+        if passing_candidates:
+            print(f"[orchestrator] ✓ Doctor produced a passing candidate on attempt "
+                  f"{attempt} — stopping (no further cycles)")
+            break
+
         # ── Adaptive budget ─────────────────────────────────────────────────────
-        # Keep going while the generator is still closing gaps; stop early once it
-        # plateaus (no reduction for MAX_PLATEAU_ROUNDS attempts) so a stuck chapter
-        # doesn't burn the whole ceiling. Any doctor candidate already collected still
-        # wins in post-loop selection, so an early stop never discards a pass.
+        # Only reached while STILL failing both checks. Keep going while the generator
+        # is closing gaps; stop early once it plateaus (no reduction for
+        # MAX_PLATEAU_ROUNDS attempts) so a stuck chapter doesn't burn the whole ceiling.
         gap_count = (
             len(c1.get("feedback", []))
             + len(c2.get("missing_concepts", []))
