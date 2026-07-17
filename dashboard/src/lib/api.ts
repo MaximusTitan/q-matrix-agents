@@ -2,6 +2,7 @@ import type {
   AgentKey,
   AnalyticsResponse,
   ChapterAnalytics,
+  L2EligibleChaptersResponse,
   ModelPerformanceResponse,
   RunFormValues,
   RunMetadata,
@@ -88,6 +89,25 @@ export async function fetchKbChapters(board: string, subject: string, grade: str
   if (!res.ok) return [];
   const data = (await res.json()) as { chapters: string[] };
   return data.chapters;
+}
+
+export async function fetchL2EligibleChapters(
+  board: string,
+  subject: string,
+  grade: string
+): Promise<L2EligibleChaptersResponse> {
+  const params = new URLSearchParams({ board, subject, grade });
+  const res = await fetch(`${API_BASE}/kb/l2-eligible-chapters?${params}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch L2-eligible chapters: ${res.status}`);
+  }
+  return res.json() as Promise<L2EligibleChaptersResponse>;
+}
+
+export async function postRunL2Prerequisite(
+  values: RunFormValues & { no_sync?: boolean } & ModelsOverride
+): Promise<{ run_id: string }> {
+  return post("/run-l2-prerequisite", { ...values, no_sync: true });
 }
 
 export interface AnalyticsFilters {

@@ -12,7 +12,8 @@ export const AGENT_LABELS: Record<AgentKey, string> = {
   rules_doctor: "Doctor (rules)",
   revision: "Revision",
   judge: "Judge",
-  prerequisite: "Prerequisites",
+  prerequisite: "Prerequisites (L1)",
+  prerequisite_l2: "Prerequisites (L2)",
 };
 
 // Fetches the Gateway's model catalog via our backend's cached GET /models proxy

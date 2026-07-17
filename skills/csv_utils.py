@@ -206,7 +206,13 @@ def rows_from_pairs(board: str, subject: str, grade: str, chapter: str, pairs: l
             "concept": (p.get("concept") or "").strip(),
             "skill":   (p.get("skill")   or "").strip(),
         }
+        # The tool schema declares each item as a {concept, skill} object, but tool
+        # use is not strictly schema-enforced — the model occasionally emits bare
+        # strings instead. Drop non-dict items here so a malformed submission becomes
+        # an empty/short rows list that validate_rows rejects (feeding the generator's
+        # retry loop) rather than crashing with AttributeError.
         for p in pairs
+        if isinstance(p, dict)
     ]
 
 

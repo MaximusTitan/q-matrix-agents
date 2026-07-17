@@ -839,3 +839,88 @@ def confirmed_csv_has_prereqs(board: str, subject: str, grade: str, chapter: str
                 # Non-JSON but non-empty text still counts as "has prereqs".
                 return True
     return False
+
+
+def confirmed_csv_has_l2_prereqs(board: str, subject: str, grade: str, chapter: str) -> bool:
+    """
+    L2 analogue of confirmed_csv_has_prereqs — True if any Level-2 (cross-chapter)
+    prerequisite cell on this chapter's confirmed CSV holds a non-empty JSON value.
+    """
+    from agents.prerequisite_l2 import L2_COLUMNS
+
+    if not confirmed_csv_exists(board, subject, grade, chapter):
+        return False
+    try:
+        rows = parse_csv(load_confirmed_csv(board, subject, grade, chapter))
+    except (ValueError, FileNotFoundError):
+        return False
+
+    for row in rows:
+        for col in L2_COLUMNS:
+            raw = (row.get(col) or "").strip()
+            if not raw or raw == "[]":
+                continue
+            try:
+                if json.loads(raw):
+                    return True
+            except (json.JSONDecodeError, TypeError):
+                return True
+    return False
+
+
+def list_chapters_in_grade_subject(board: str, subject: str, grade: str) -> list[dict]:
+    """
+    Chapters under textbooks/{board}/{subject}/{grade}/, filtered from
+    list_textbook_chapters() rather than re-walking the filesystem, with two
+    added flags for L2 eligibility:
+        has_l1_prereqs  — confirmed_csv_has_prereqs(...)
+        has_l2_prereqs  — confirmed_csv_has_l2_prereqs(...)
+
+    Returns:
+        One dict per chapter: {"board", "subject", "grade", "chapter",
+        "has_csm", "has_confirmed", "has_l1_prereqs", "has_l2_prereqs"}.
+    """
+    chapters = [
+        c for c in list_textbook_chapters()
+        if c["board"] == board and c["subject"] == subject and c["grade"] == grade
+    ]
+    for c in chapters:
+        c["has_l1_prereqs"] = confirmed_csv_has_prereqs(board, subject, grade, c["chapter"])
+        c["has_l2_prereqs"] = confirmed_csv_has_l2_prereqs(board, subject, grade, c["chapter"])
+    return chapters
+
+
+def grade_subject_l1_complete(board: str, subject: str, grade: str) -> bool:
+    """
+    True iff every chapter in this board/subject/grade has L1 prerequisites
+    mapped. False (not an error) if the grade+subject has zero chapters, so an
+    empty group is never mistaken for "complete".
+    """
+    chapters = list_chapters_in_grade_subject(board, subject, grade)
+    if not chapters:
+        return False
+    return all(c["has_l1_prereqs"] for c in chapters)
+
+
+def load_confirmed_csvs_for_grade_subject(
+    board: str, subject: str, grade: str, *, exclude_chapter: str | None = None
+) -> dict[str, list[dict]]:
+    """
+    Batch-load every chapter's confirmed CSV in one board/subject/grade, keyed
+    by chapter name. A chapter whose CSV is missing or unparseable is skipped
+    (not raised) so one bad sibling doesn't block L2 mapping for the rest.
+
+    Args:
+        exclude_chapter: Chapter name to omit (typically the L2 target chapter
+                          itself, since it's loaded separately by the caller).
+    """
+    result: dict[str, list[dict]] = {}
+    for c in list_chapters_in_grade_subject(board, subject, grade):
+        chapter = c["chapter"]
+        if chapter == exclude_chapter:
+            continue
+        try:
+            result[chapter] = parse_csv(load_confirmed_csv(board, subject, grade, chapter))
+        except (ValueError, FileNotFoundError):
+            continue
+    return result

@@ -16,6 +16,7 @@ CLI Usage:
 """
 
 import argparse
+import re
 import sys
 from datetime import date
 from concurrent.futures import ThreadPoolExecutor
@@ -27,7 +28,9 @@ from agents.revision       import run as run_revision
 from agents.doctor         import run as run_doctor
 from agents.rules_doctor   import run as run_rules_doctor
 from agents.judge          import run as run_judge
-from agents.prerequisite   import run as run_prerequisite, L1_COLUMNS
+from agents.prerequisite      import run as run_prerequisite, L1_COLUMNS
+from agents.prerequisite_l2   import run as run_prerequisite_l2, L2_COLUMNS
+from agents.chapter_relevance import screen as screen_chapter_relevance
 
 from skills.kb_access import (
     concept_skill_map_exists,
@@ -40,12 +43,16 @@ from skills.kb_access import (
     save_confirmed_csv,
     save_run_record,
     confirmed_csv_has_prereqs,
+    confirmed_csv_has_l2_prereqs,
+    load_confirmed_csv,
+    grade_subject_l1_complete,
+    load_confirmed_csvs_for_grade_subject,
 )
 from skills.csv_utils import parse_csv, enriched_csv_to_text, validate_csv_schema
 from skills.git_sync import pull_kb, push_kb
 from skills.run_record import RunRecordBuilder
 from skills.report_render import render_report_md
-from skills.llm import DEFAULT_MODEL
+from skills.llm import DEFAULT_MODEL, add_usage
 
 # Safety ceiling on generate→eval cycles. The loop also stops EARLY (before this cap)
 # once the generator stops closing gaps — see the adaptive-budget check in run_pipeline.
@@ -56,7 +63,7 @@ MAX_PLATEAU_ROUNDS = 2  # consecutive non-improving attempts before escalating e
 # agent, each defaulting to AGENT_DEFAULT_MODELS[key] when not supplied.
 AGENT_KEYS = (
     "map_extraction", "generator", "eval", "doctor",
-    "rules_doctor", "revision", "judge", "prerequisite",
+    "rules_doctor", "revision", "judge", "prerequisite", "prerequisite_l2",
 )
 
 # Per-agent defaults, used when the caller's `models` dict omits a key. Map Extraction,
@@ -73,6 +80,7 @@ AGENT_DEFAULT_MODELS = {
     "revision":        "openai/gpt-5.4-mini",
     "judge":           "openai/gpt-5.4-mini",
     "prerequisite":    "openai/gpt-5.4-mini",
+    "prerequisite_l2": "openai/gpt-5.4-mini",
 }
 
 
@@ -169,6 +177,20 @@ def _run_prerequisite_phase(board, subject, grade, chapter, attempt, csv_text, e
         },
     })
     return final_csv, checkpoint, usage, cost
+
+
+_CHAPTER_ORDER_RE = re.compile(r"^\D*0*(\d+)")
+
+
+def _chapter_order(chapter: str) -> int | None:
+    """
+    Leading number in a chapter folder name (e.g. "Chapter05_Arithmetic_Progressions"
+    -> 5), used as a curriculum-sequence signal for L2 mapping. None if the name
+    doesn't start with a number after any non-digit prefix (an unconventional chapter
+    name) — callers must treat that as "order unknown", not "order zero".
+    """
+    m = _CHAPTER_ORDER_RE.match(chapter)
+    return int(m.group(1)) if m else None
 
 
 _IDENTIFIER_COLUMNS = ("board", "subject", "grade", "chapter")
@@ -272,6 +294,222 @@ def run_prerequisite_only(csv_text: str, emit=None, models: dict | None = None) 
         "checkpoint":      checkpoint,
     })
     print(f"\n[orchestrator] ✓ Prerequisite-only run complete")
+    return {"passed": True, "csv": final_csv, "checkpoint": checkpoint}
+
+
+def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAULT_MODEL):
+    """
+    Run Level-2 (cross-chapter, same grade+subject) prerequisite mapping for one
+    target chapter, persist the enriched CSV checkpoint, and emit PrerequisitesL2
+    agent events.
+
+    Re-checks grade_subject_l1_complete defensively — the API route already gates
+    this before spawning the run, but KB state could change between that check and
+    this one actually executing on a background thread.
+
+    Returns:
+        (final_csv: str, checkpoint_path: str | None, usage: dict, cost_usd: float)
+    """
+    emit("agent_started", {
+        "agent":   "PrerequisitesL2",
+        "attempt": 1,
+        "input":   {"level": "L2 (cross-chapter, same grade+subject)"},
+    })
+
+    if not grade_subject_l1_complete(board, subject, grade):
+        msg = (f"L2 mapping requires every chapter in {board}/{subject}/{grade} to have "
+               "L1 prerequisites mapped first.")
+        print(f"[orchestrator] {msg}")
+        emit("agent_completed", {"agent": "PrerequisitesL2", "output": {"error": msg, "checkpoint": None}})
+        return "", None, {}, 0.0
+
+    try:
+        target_rows = parse_csv(load_confirmed_csv(board, subject, grade, chapter))
+    except (ValueError, FileNotFoundError) as e:
+        print(f"[orchestrator] L2 prerequisite phase skipped — target CSV unreadable: {e}")
+        emit("agent_completed", {
+            "agent": "PrerequisitesL2",
+            "output": {"error": f"target CSV unreadable: {e}", "checkpoint": None},
+        })
+        return "", None, {}, 0.0
+
+    sibling_rows_by_chapter = load_confirmed_csvs_for_grade_subject(
+        board, subject, grade, exclude_chapter=chapter
+    )
+
+    # ── Curriculum-order gate ────────────────────────────────────────────────
+    # A chapter can only be a genuine prerequisite SOURCE if it comes earlier in
+    # the book — later chapters can never be prerequisites of an earlier one in a
+    # linear curriculum. Chapter folder names encode this order (Chapter01_...,
+    # Chapter02_...), so this is enforced deterministically, before either LLM call,
+    # rather than trusted to LLM judgment (which has no notion of book order at all
+    # and will otherwise assert semantically-plausible but directionally-backwards
+    # edges — e.g. treating a later "Polynomials" chapter as a prerequisite for an
+    # earlier "Real Numbers" chapter). Chapters whose name doesn't follow the
+    # numbering convention keep an unknown order and are never excluded by this gate.
+    target_order = _chapter_order(chapter)
+    order_excluded = []
+    if target_order is not None:
+        for ch in list(sibling_rows_by_chapter.keys()):
+            ch_order = _chapter_order(ch)
+            if ch_order is not None and ch_order > target_order:
+                order_excluded.append(ch)
+                del sibling_rows_by_chapter[ch]
+
+    if order_excluded:
+        print(f"[orchestrator] Excluded {len(order_excluded)} later chapter(s) by curriculum "
+              f"order (not eligible as prerequisite sources for {chapter}): {order_excluded}")
+
+    target_concepts = list({r.get("concept", "") for r in target_rows})
+    target_skills   = list({r.get("skill", "")   for r in target_rows})
+    sibling_items = {
+        ch: {
+            "concepts": list({r.get("concept", "") for r in rows}),
+            "skills":   list({r.get("skill", "")   for r in rows}),
+        }
+        for ch, rows in sibling_rows_by_chapter.items()
+    }
+
+    usage = {}
+    cost = 0.0
+    order_warnings = [
+        f"excluded by curriculum order (later chapter, not eligible as a prerequisite source): {ch}"
+        for ch in order_excluded
+    ]
+    try:
+        screen_result = screen_chapter_relevance(
+            chapter, target_concepts, target_skills, sibling_items, model=model
+        )
+        relevant_chapters = set(screen_result.get("relevant_chapters", []))
+        screen_warnings = order_warnings + screen_result.get("warnings", [])
+        usage = add_usage(usage, screen_result.get("usage") or {})
+        cost += screen_result.get("cost_usd", 0.0)
+    except Exception as e:
+        # Defensive: a screening failure must not balloon into a full O(chapters^2)
+        # sweep — fall back to no candidate chapters at all (mirrors agents' own
+        # fail-to-empty pattern), same as any other L2 failure below.
+        print(f"[orchestrator] Chapter relevance screen failed — no candidate chapters: {e}")
+        relevant_chapters = set()
+        screen_warnings = order_warnings + [f"chapter_relevance screen error: {e}"]
+
+    candidate_pool = {ch: sibling_items[ch] for ch in relevant_chapters if ch in sibling_items}
+
+    try:
+        result = run_prerequisite_l2(
+            target_rows, candidate_pool, sibling_rows_by_chapter,
+            board, subject, grade, chapter, model=model,
+        )
+        enriched_rows = result["rows"]
+        warnings      = screen_warnings + result.get("warnings", [])
+        concept_edges = result.get("concept_edges", {})
+        skill_edges   = result.get("skill_edges", {})
+        usage         = add_usage(usage, result.get("usage") or {})
+        cost         += result.get("cost_usd", 0.0)
+    except Exception as e:
+        # Defensive: never let an L2 failure break an already-confirmed chapter.
+        print(f"[orchestrator] L2 prerequisite mapping failed — persisting empty columns: {e}")
+        enriched_rows = [{**r, L2_COLUMNS[0]: [], L2_COLUMNS[1]: []} for r in target_rows]
+        warnings      = screen_warnings + [f"prerequisite_l2 agent error: {e}"]
+        concept_edges = {}
+        skill_edges   = {}
+
+    # Preserve existing L1 columns already present on the target rows — only add L2.
+    final_csv = enriched_csv_to_text(enriched_rows, L1_COLUMNS + L2_COLUMNS)
+
+    checkpoint = None
+    try:
+        checkpoint = save_confirmed_csv(board, subject, grade, chapter, final_csv)
+        print(f"[orchestrator] Saved confirmed CSV checkpoint (L2): {checkpoint}")
+    except Exception as e:
+        print(f"[orchestrator] Warning: failed to persist confirmed CSV — {e}")
+
+    emit("agent_completed", {
+        "agent": "PrerequisitesL2",
+        "output": {
+            "concept_edge_count": sum(len(v) for v in concept_edges.values()),
+            "skill_edge_count":   sum(len(v) for v in skill_edges.values()),
+            "sibling_chapter_count": len(sibling_items),
+            "candidate_chapter_count": len(candidate_pool),
+            "warnings":           warnings,
+            "checkpoint":         checkpoint,
+            "usage":              usage,
+            "cost_usd":           cost,
+            "model":              model,
+        },
+    })
+    return final_csv, checkpoint, usage, cost
+
+
+def run_l2_prerequisite_only(
+    board: str, subject: str, grade: str, chapter: str,
+    emit=None, models: dict | None = None,
+) -> dict:
+    """
+    Run Level-2 (cross-chapter) prerequisite mapping for one target chapter.
+
+    Requires the target chapter to already have a confirmed CSV with L1 mapped,
+    AND every chapter in its grade+subject to have L1 mapped (grade_subject_l1_complete)
+    — callers (the API route) should gate on this before invoking, but this function
+    re-checks defensively.
+
+    Returns:
+        {"passed": True, "csv": enriched_csv, "checkpoint": path} on success,
+        {"passed": False, "error": message} if ineligible.
+    """
+    if emit is None:
+        emit = _noop
+
+    if not grade_subject_l1_complete(board, subject, grade):
+        msg = (f"Not every chapter in {board}/{subject}/{grade} has L1 prerequisites "
+               "mapped yet — L2 mapping is not available.")
+        emit("error", {"message": msg})
+        return {"passed": False, "error": msg}
+
+    _print_header(board, subject, grade, chapter, extra="Mode: L2 prerequisite-only (cross-chapter)")
+
+    emit("pipeline_started", {
+        "board": board, "subject": subject,
+        "grade": grade, "chapter": chapter,
+        "human_feedback": None,
+    })
+    emit("attempt_started", {"attempt": 1, "max_attempts": 1})
+
+    final_csv, checkpoint, prereq_usage, prereq_cost = _run_l2_prerequisite_phase(
+        board, subject, grade, chapter, emit=emit,
+        model=_model_for(models, "prerequisite_l2"),
+    )
+
+    if not checkpoint:
+        emit("error", {"message": "L2 prerequisite mapping did not complete — see agent output for details."})
+        return {"passed": False, "error": "L2 prerequisite mapping did not complete."}
+
+    builder = RunRecordBuilder(
+        board, subject, grade, chapter, date.today().isoformat(),
+        mode="l2_prerequisite_only",
+    )
+    builder.add_pipeline_usage(
+        "prerequisite_l2", prereq_usage, prereq_cost, model=_model_for(models, "prerequisite_l2")
+    )
+    builder.finalize(
+        final_status="passed", failed_check=None,
+        final_csv=final_csv, final_csv_name="confirmed.csv",
+        confirmed_checkpoint=bool(checkpoint),
+        has_prereqs=confirmed_csv_has_l2_prereqs(board, subject, grade, chapter),
+    )
+    record, artifacts = builder.build()
+    _persist_run_record(board, subject, grade, chapter, record, artifacts,
+                        render_report_md(record))
+
+    emit("pipeline_passed", {
+        "attempt":         1,
+        "csv":             final_csv,
+        "source":          "user_provided",
+        "selected_by":     "single",
+        "candidate_count": 1,
+        "judge_rationale": None,
+        "checkpoint":      checkpoint,
+    })
+    print(f"\n[orchestrator] ✓ L2 prerequisite-only run complete")
     return {"passed": True, "csv": final_csv, "checkpoint": checkpoint}
 
 

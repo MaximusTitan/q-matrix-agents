@@ -34,6 +34,7 @@ export const AGENT_KEYS = [
   "revision",
   "judge",
   "prerequisite",
+  "prerequisite_l2",
 ] as const;
 
 export type AgentKey = (typeof AGENT_KEYS)[number];
@@ -176,9 +177,18 @@ export interface AnalyticsChapter {
   chapter: string;
   status: ChapterStatus;
   has_prereqs: boolean;
+  has_l2_prereqs: boolean;
   escalation_count: number;
   latest_failed_check: string | null;
   attempts: number | null;
+}
+
+// ─── L2 (cross-chapter) prerequisite mapping ──────────────────────────────────
+
+export interface L2EligibleChaptersResponse {
+  eligible: boolean;
+  blocking_chapters: string[];
+  chapters: { chapter: string; has_l2_prereqs: boolean }[];
 }
 
 export interface AnalyticsGroup {
@@ -362,6 +372,7 @@ export interface ChapterRunRecord {
   pipeline_agents?: {
     map_extraction?: PipelineAgentUsage;
     prerequisite?: PipelineAgentUsage;
+    prerequisite_l2?: PipelineAgentUsage;
   };
   total_usage?: Usage;
   total_cost_usd?: number;
@@ -377,6 +388,7 @@ export interface ChapterAnalytics {
     headers: string[];
     rows: Record<string, string>[];
     has_prereqs: boolean;
+    has_l2_prereqs: boolean;
   } | null;
   escalations: EscalationReport[];
   concept_skill_map: {
@@ -394,6 +406,9 @@ export interface StartRunOptions extends RunFormValues {
   // When set, Stage 1 (generation) is skipped and only prerequisite mapping runs on
   // this CSV. board/subject/grade/chapter are derived server-side from the CSV.
   curriculumCsv?: string;
+  // When set, runs L2 (cross-chapter) prerequisite mapping for the given
+  // board/subject/grade/chapter instead of the full pipeline or L1 CSV mode.
+  l2Prerequisite?: boolean;
   // Per-agent model override (Gateway model id). Omitted keys fall back to the
   // pipeline default server-side. Not part of RunFormValues/QueueItem — batch-queued
   // chapters always use the pipeline default unless explicitly set here per-run.

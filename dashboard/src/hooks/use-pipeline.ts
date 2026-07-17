@@ -5,6 +5,7 @@ import {
   postReExtract,
   postReject,
   postRun,
+  postRunL2Prerequisite,
   postRunPrerequisiteOnly,
   streamUrl,
 } from "@/lib/api";
@@ -64,7 +65,7 @@ export function usePipeline({ onRunComplete }: UsePipelineOptions = {}) {
     async (options: StartRunOptions) => {
       const {
         board, subject, grade, chapter,
-        humanFeedback, mapGuidance, rejectReason, curriculumCsv, models,
+        humanFeedback, mapGuidance, rejectReason, curriculumCsv, l2Prerequisite, models,
       } = options;
 
       // The "provide CSV" path derives identifiers server-side, so the KB fields are
@@ -88,6 +89,8 @@ export function usePipeline({ onRunComplete }: UsePipelineOptions = {}) {
 
         if (curriculumCsv) {
           result = await postRunPrerequisiteOnly({ csv_text: curriculumCsv, models });
+        } else if (l2Prerequisite) {
+          result = await postRunL2Prerequisite(base);
         } else if (humanFeedback) {
           result = await postRun({ ...base, human_feedback: humanFeedback });
         } else if (mapGuidance) {
@@ -108,8 +111,13 @@ export function usePipeline({ onRunComplete }: UsePipelineOptions = {}) {
           const event = JSON.parse(e.data) as { type: string; data: Record<string, unknown> };
 
           if (event.type === "done") {
-            // Read the terminal status from the ref — the reducer has already
-            // flushed the pass/escalate event that arrived before `done`.
+            // Read the terminal status from the ref. The backend emits the pass/
+            // escalate event and `done` back-to-back with no delay, so both can be
+            // delivered and processed in the same tick — before React has committed
+            // and run the passive ref-sync effect below. Relying on that effect here
+            // would read a stale "running" status and misreport the outcome (e.g. to
+            // the chapter queue), so the ref is also updated synchronously below,
+            // inside the same setState call that computes the reduced status.
             finishRun(stateRef.current.status);
             return;
           }
@@ -118,7 +126,11 @@ export function usePipeline({ onRunComplete }: UsePipelineOptions = {}) {
             return;
           }
 
-          setState((prev) => reduceEvent(prev, event));
+          setState((prev) => {
+            const next = reduceEvent(prev, event);
+            stateRef.current = next;
+            return next;
+          });
         };
 
         es.onerror = () => {

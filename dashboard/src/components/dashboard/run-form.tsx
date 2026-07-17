@@ -16,6 +16,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { fetchKbBoards, fetchKbSubjects, fetchKbGrades, fetchKbChapters } from "@/lib/api";
 import { fetchModels } from "@/lib/models";
 import { AgentModelPicker } from "./model-select";
+import { L2RunForm } from "./l2-run-form";
 import { AGENT_KEYS, type AgentKey, type ModelInfo, type RunFormValues, type StartRunOptions } from "@/lib/types";
 
 // Keep in sync with orchestrator.py::AGENT_DEFAULT_MODELS.
@@ -28,6 +29,7 @@ const AGENT_DEFAULT_MODELS: Record<AgentKey, string> = {
   revision: "openai/gpt-5.4-mini",
   judge: "openai/gpt-5.4-mini",
   prerequisite: "openai/gpt-5.4-mini",
+  prerequisite_l2: "openai/gpt-5.4-mini",
 };
 
 interface RunFormProps {
@@ -39,9 +41,9 @@ interface RunFormProps {
   onEnqueue?: (values: RunFormValues) => void;
 }
 
-type LoadState = "idle" | "loading" | "done";
+export type LoadState = "idle" | "loading" | "done";
 
-function KbSelect({
+export function KbSelect({
   label,
   value,
   options,
@@ -98,8 +100,9 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
   const [gradeState, setGradeState] = useState<LoadState>("idle");
   const [chapterState, setChapterState] = useState<LoadState>("idle");
 
-  // "generate" = full pipeline from the KB; "csv" = skip Stage 1, paste/upload a CSV.
-  const [mode, setMode] = useState<"generate" | "csv">("generate");
+  // "generate" = full pipeline from the KB; "csv" = skip Stage 1, paste/upload a CSV;
+  // "l2" = cross-chapter prerequisite mapping for a chapter with L1 already mapped.
+  const [mode, setMode] = useState<"generate" | "csv" | "l2">("generate");
   const [csvText, setCsvText] = useState("");
 
   // Per-agent model overrides (advanced, collapsed by default). Omitted keys fall
@@ -243,6 +246,7 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
         {([
           ["generate", "Generate from KB"],
           ["csv", "Provide CSV"],
+          ["l2", "L2 Prerequisites"],
         ] as const).map(([value, label]) => (
           <button
             key={value}
@@ -325,7 +329,7 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
             )}
           </div>
         </>
-      ) : (
+      ) : mode === "csv" ? (
         <>
           <div className="space-y-1.5">
             <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -359,6 +363,15 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
             ▶ Run Prerequisite Mapping
           </Button>
         </>
+      ) : (
+        <L2RunForm
+          form={form}
+          onFormChange={onFormChange}
+          isRunning={isRunning}
+          onStart={onStart}
+          modelsSection={modelsSection}
+          modelsForStart={modelsForStart}
+        />
       )}
     </div>
   );

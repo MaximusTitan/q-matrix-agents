@@ -37,6 +37,7 @@ from orchestrator import (
     handle_reject,
     handle_re_extract,
     run_prerequisite_only,
+    run_l2_prerequisite_only,
     _identifiers_from_rows,
 )
 from skills.csv_utils import validate_csv_schema, parse_csv
@@ -94,6 +95,15 @@ class PrereqOnlyRequest(BaseModel):
     csv_text: str
     models:   dict[str, str] | None = None
     no_sync:  bool = True
+
+
+class L2PrereqRequest(BaseModel):
+    board:   str
+    subject: str
+    grade:   str
+    chapter: str
+    models:  dict[str, str] | None = None
+    no_sync: bool = True
 
 
 # ─── Run helper ─────────────────────────────────────────────────────────────
@@ -236,6 +246,45 @@ async def run_prerequisite_only_route(req: PrereqOnlyRequest):
 
     run_id = bus.create_run(board, subject, grade, chapter)
     _spawn_run(run_id, run_prerequisite_only, csv_text=req.csv_text, models=req.models)
+    return {"run_id": run_id}
+
+
+@app.get("/kb/l2-eligible-chapters")
+async def kb_l2_eligible_chapters(board: str, subject: str, grade: str):
+    """
+    Chapters in a board/subject/grade eligible for L2 (cross-chapter) prerequisite
+    mapping. Eligibility requires EVERY chapter in the grade+subject to already have
+    L1 prerequisites mapped — L2 needs the full sibling set as its candidate pool.
+    """
+    chapters = kb_access.list_chapters_in_grade_subject(board, subject, grade)
+    blocking = [c["chapter"] for c in chapters if not c["has_l1_prereqs"]]
+    eligible = bool(chapters) and not blocking
+    return {
+        "eligible": eligible,
+        "blocking_chapters": blocking,
+        "chapters": (
+            [{"chapter": c["chapter"], "has_l2_prereqs": c["has_l2_prereqs"]} for c in chapters]
+            if eligible else []
+        ),
+    }
+
+
+@app.post("/run-l2-prerequisite")
+async def run_l2_prerequisite_route(req: L2PrereqRequest):
+    """Start an L2 (cross-chapter) prerequisite mapping run for one target chapter."""
+    if not kb_access.grade_subject_l1_complete(req.board, req.subject, req.grade):
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Not every chapter in {req.board}/{req.subject}/{req.grade} has L1 "
+                    "prerequisites mapped yet — L2 mapping is not available."),
+        )
+
+    run_id = bus.create_run(req.board, req.subject, req.grade, req.chapter)
+    _spawn_run(
+        run_id, run_l2_prerequisite_only,
+        board=req.board, subject=req.subject, grade=req.grade, chapter=req.chapter,
+        models=req.models,
+    )
     return {"run_id": run_id}
 
 
@@ -456,6 +505,7 @@ async def kb_analytics(
             "chapter": e["chapter"],
             "status": e["status"],
             "has_prereqs": e["has_prereqs"],
+            "has_l2_prereqs": e["has_l2_prereqs"],
             "escalation_count": e["escalation_count"],
             "latest_failed_check": e["latest_failed_check"],
             "attempts": e["attempts"],
@@ -489,17 +539,21 @@ def _build_chapter_entry(
     if has_confirmed:
         status = "confirmed"
         has_prereqs = kb_access.confirmed_csv_has_prereqs(board, subject, grade, chapter)
+        has_l2_prereqs = kb_access.confirmed_csv_has_l2_prereqs(board, subject, grade, chapter)
     elif escalations:
         status = "escalated"
         has_prereqs = False
+        has_l2_prereqs = False
     else:
         status = "mapped"
         has_prereqs = False
+        has_l2_prereqs = False
 
     return {
         "board": board, "subject": subject, "grade": grade, "chapter": chapter,
         "status": status,
         "has_prereqs": has_prereqs,
+        "has_l2_prereqs": has_l2_prereqs,
         "escalation_count": len(escalations),
         "latest_failed_check": (latest or {}).get("failed_check") or None,
         "attempts": (latest or {}).get("total_attempts"),
@@ -601,6 +655,7 @@ async def kb_analytics_chapter(board: str, subject: str, grade: str, chapter: st
                 "headers": headers,
                 "rows": rows,
                 "has_prereqs": kb_access.confirmed_csv_has_prereqs(board, subject, grade, chapter),
+                "has_l2_prereqs": kb_access.confirmed_csv_has_l2_prereqs(board, subject, grade, chapter),
             }
     except Exception:
         pass

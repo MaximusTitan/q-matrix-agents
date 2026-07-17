@@ -2,7 +2,9 @@
 
 > Orchestrator, agents, and skills for the Q-Matrix curriculum generation system — part of [AI Ready School](https://github.com/MaximusTitan/q-matrix-kb) by Intelliana.
 
-This repository is the **code layer** of the Q-Matrix system. It contains the orchestrator, four LLM-powered agents, and the skill modules they use to read from and write to the knowledge base.
+This repository is the **code layer** of the Q-Matrix system. It contains the orchestrator, ten LLM-powered agents, a FastAPI backend, a live Next.js dashboard, and the skill modules that read from and write to the knowledge base.
+
+> For the full system design (control-flow diagrams, KB layout, model routing, runtime topology) see **[ARCHITECTURE.md](ARCHITECTURE.md)** — this README is a quick-start overview.
 
 ---
 
@@ -11,10 +13,10 @@ This repository is the **code layer** of the Q-Matrix system. It contains the or
 Given curriculum documentation from any education board, Q-Matrix produces a validated curriculum CSV that maps:
 
 ```
-Board → Subject → Grade → Chapter → Concept → Skill
+Board → Subject → Grade → Chapter → Concept → Skill   (+ L1 and L2 prerequisite columns)
 ```
 
-This is a multi-agent system. Four specialized agents — each with their own skills, prompt, and responsibilities — coordinate through a thin orchestrator to generate, evaluate, and refine curriculum CSVs automatically.
+This is a multi-agent system. Specialized agents — each with their own skills, prompt, and responsibilities — coordinate through a thin orchestrator to generate, evaluate, repair, and enrich curriculum CSVs automatically, with a human in the loop only on escalation.
 
 ---
 
@@ -22,81 +24,67 @@ This is a multi-agent system. Four specialized agents — each with their own sk
 
 ```
 orchestrator.py              ← Thin coordinator. No LLM calls. Pure control flow.
+api.py                       ← FastAPI backend (:8000) — SSE streaming, analytics
 │
-├── agents/
-│   ├── map_extraction.py    ← Extracts concepts + skills from chapter PDFs
-│   ├── generator.py         ← Produces curriculum CSV from docs + prompt/rules
-│   ├── eval.py              ← Validates CSV against rules and concept-skill-map
-│   └── revision.py          ← Rewrites prompts when eval fails
+├── agents/                  ← 10 single-responsibility LLM agents (see roster below)
 │
-└── skills/
-    ├── file_io.py           ← read_file, write_file, file_exists, create_directory
-    ├── kb_access.py         ← load/save prompts, rules, maps, curriculum docs
-    ├── pdf_reader.py        ← extract_text_from_pdf
-    ├── llm.py               ← call_llm (Anthropic API wrapper)
-    ├── csv_utils.py         ← parse_csv, validate_csv_schema
-    ├── diff.py              ← diff_concepts, diff_skills
-    └── git_sync.py          ← pull_kb, push_kb
+├── skills/
+│   ├── file_io.py           ← read_file, write_file, file_exists, create_directory
+│   ├── kb_access.py         ← sole owner of the KB on-disk layout; load/save everything
+│   ├── pdf_reader.py        ← extract_text_from_pdf
+│   ├── llm.py               ← call_llm / call_llm_structured (Vercel AI Gateway wrapper)
+│   ├── csv_utils.py         ← parse_csv, validate_csv_schema, tool-call JSON schemas
+│   ├── diff.py              ← semantic coverage diff (CSV vs. concept-skill-map)
+│   ├── git_sync.py          ← pull_kb, push_kb
+│   ├── run_record.py        ← builds the structured run.json (schema v3)
+│   ├── report_render.py     ← renders human-readable report.md
+│   └── model_stats.py       ← aggregates run records for the analytics dashboard
+│
+└── dashboard/                ← Next.js live console + analytics (:3000)
 ```
 
 ---
 
 ## Agent Roster
 
-### Map Extraction Agent
-Extracts a `concept-skill-map.json` from a chapter PDF. Runs in parallel with the Generator Agent when no map exists for a chapter.
+Ten agents, each loading its system prompt from `prompts/<name>_prompt.md`. Full responsibilities, I/O shapes, and the flowchart of how they connect are in **[ARCHITECTURE.md §4](ARCHITECTURE.md#4-the-agent-roster)**.
 
-**Input:** `chapter.pdf` path
-**Output:** `concept-skill-map.json` written to the KB
-
-### Generator Agent
-Produces a curriculum CSV from curriculum documentation and either an existing prompt or universal rules (cold start). Input type is always one or the other — never both.
-
-**Input:** `{ input_type: "prompt" | "rules", prompt | rules, curriculum_docs, board, subject, grade, chapter }`
-**Output:** `{ csv }`
-
-### Eval Agent
-Runs two sequential checks against the generated CSV. Check 2 only runs after Check 1 passes. The concept-skill-map is always present at this stage.
-
-**Check 1:** Validates against universal rules → structured feedback
-**Check 2:** Diffs CSV against concept-skill-map → missing_concepts + missing_skills
-
-**Input:** `{ csv, rules, concept_skill_map }`
-**Output:** `{ check1: { passed, feedback }, check2: { passed, feedback, missing_concepts, missing_skills } }`
-
-### Revision Agent
-Rewrites the current prompt based on structured eval feedback. Has two modes: subject-level (cold start failure) and grade-level (grade-specific failure). Never sees the CSV directly — only the feedback.
-
-**Input:** `{ current_prompt, feedback, failed_check, mode: "subject" | "grade" }`
-**Output:** `{ revised_prompt }`
+| Agent | Responsibility |
+|---|---|
+| **Map Extraction** | Extract concepts + skills from a chapter PDF → `concept-skill-map.json` |
+| **Generator** | Produce curriculum CSV rows from docs + prompt/rules (cold start or existing prompt) |
+| **Eval** | Check 1 (universal rules) + Check 2 (concept-skill-map coverage), run in parallel |
+| **Revision** | Rewrite the generation prompt so a reported failure won't recur (subject or grade mode) |
+| **Doctor** | Surgically patch a CSV that passed Check 1 but failed Check 2 |
+| **Rules Doctor** | Mirror of Doctor — fix Check 1 rule violations without losing Check 2 coverage |
+| **Judge** | Choose the single best CSV when ≥2 candidates already pass both checks |
+| **Prerequisites (L1)** | Map within-chapter concept→concept and skill→skill prerequisite edges |
+| **Chapter Relevance** | Cheap, recall-biased pre-filter that flags sibling chapters worth the full L2 pass |
+| **Prerequisite (L2)** | Map cross-chapter (same grade+subject) prerequisite edges, using the relevance-screened candidate pool |
 
 ---
 
 ## Orchestration Flow
 
+The core generate → evaluate → repair/revise loop (bounded, adaptive). Cross-chapter (L2) prerequisite mapping runs separately, after every chapter in a grade+subject has L1 prerequisites. See **[ARCHITECTURE.md §5](ARCHITECTURE.md#5-the-pipeline-control-flow)** for the full flowchart including Doctor/Judge/escalation paths.
+
 ```
 START: Board · Subject · Grade · Chapter
   |
+  ├── git pull KB
   ├── concept-skill-map missing?
   │     YES → Map Extraction Agent + Generator Agent run in PARALLEL
-  │           Orchestrator waits for both
   │     NO  → Generator Agent only
   |
-  ├── Prompt resolution (orchestrator decides before calling Generator):
-  │     ① grade/prompt.md exists   → input_type: prompt (grade-specific)
-  │     ② base_prompt.md exists    → input_type: prompt (subject-level)
-  │     ③ neither exists           → input_type: rules  [Cold Start]
+  ├── Eval (Check 1 + Check 2, parallel)
+  │     both pass          → candidate
+  │     one check fails    → Doctor / Rules Doctor patches it surgically → candidate
+  │     both/still failing → Revision rewrites prompt (in-memory) → Generator → Eval
+  │     budget exhausted or plateaued → ESCALATE TO HUMAN
   |
-  ├── Eval Agent (CSV + concept-skill-map)
-  │     Check 1 fail → Revision Agent → Generator → Eval (max 3 attempts)
-  │     Check 2 fail → Revision Agent → Generator → Eval (max 3 attempts)
-  │     Either exhausted → ESCALATE TO HUMAN
-  |
-  └── Save logic:
-        Cold start + no revision  → save rules as base_prompt.md (subject)
-        Cold start + revision     → save revised prompt as base_prompt.md (subject)
-        Grade failure + revision  → save revised prompt as grade/prompt.md (grade only)
-        Prompt used + no revision → no save needed
+  ├── ≥2 passing candidates → Judge picks the best; 1 candidate → use it
+  ├── Prerequisites (L1): add within-chapter prereq edges
+  └── Save confirmed CSV + run record, git push
 ```
 
 ---
@@ -120,7 +108,7 @@ The only manually authored input is `universal_rules.md`.
 
 - Python 3.10+
 - Git with Git LFS
-- An Anthropic API key
+- A [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) API key (routes to Anthropic, OpenAI, Google, etc. from one client)
 - A local clone of [q-matrix-kb](https://github.com/MaximusTitan/q-matrix-kb)
 
 ### Installation
@@ -141,7 +129,7 @@ cp .env.example .env
 
 ```env
 KB_ROOT=D:\path\to\your\clone\of\q-matrix-kb
-ANTHROPIC_API_KEY=sk-...
+AI_GATEWAY_API_KEY=...
 ```
 
 `KB_ROOT` is the local path to wherever you cloned `q-matrix-kb`. Every person on the team sets their own path here. Never commit `.env`.
@@ -165,7 +153,12 @@ python orchestrator.py --board CBSE --subject Science --grade Grade8 --chapter C
 python orchestrator.py --reject --board CBSE --subject Science --grade Grade8 --chapter Chapter3 --reason "Max 3 skills per concept"
 ```
 
-The orchestrator pulls the latest KB state at the start of every run and pushes any new files back to remote on completion.
+**Re-extract the concept-skill-map with guidance, then re-run:**
+```bash
+python orchestrator.py --re-extract --board CBSE --subject Science --grade Grade8 --chapter Chapter3 --map-guidance "Split 'Motion' and 'Force' into separate concepts"
+```
+
+The orchestrator pulls the latest KB state at the start of every run and pushes any new files back to remote on completion (pass `--no-sync` to skip both).
 
 ---
 
@@ -173,7 +166,7 @@ The orchestrator pulls the latest KB state at the start of every run and pushes 
 
 There are two moments where a human intervenes:
 
-**Moment 1 — Eval loop exhausted (3 failed attempts)**
+**Moment 1 — Eval loop exhausted (attempt budget spent or gains plateaued)**
 
 The orchestrator writes an escalation report to `q-matrix-kb/escalations/` and prints a terminal message. The human reads the report, then re-runs with `--human-feedback`. The feedback is injected into the Revision Agent as additional context for one final cycle.
 
@@ -203,9 +196,10 @@ uvicorn api:app --reload --port 8000
 cd dashboard && npm run dev
 ```
 
-Open **http://localhost:3000**. API requests are proxied to FastAPI on port 8000 via Next.js rewrites.
+Open **http://localhost:3000**. The dashboard calls the FastAPI backend cross-origin directly (CORS-allowlisted), not through Next's rewrite proxy, so the SSE stream isn't buffered.
 
-The legacy single-file UI in [`static/index.html`](static/index.html) is deprecated.
+- **`/`** — pipeline console: run form, chapter queue (batch runs), live agent timeline, CSV compare/diff, escalation panel, and an L2 (cross-chapter) prerequisite run form.
+- **`/analytics`** — run history, model-performance rollup (pass rate, avg tokens/cost per agent+model), and per-chapter drill-down.
 
 ---
 
@@ -213,13 +207,13 @@ The legacy single-file UI in [`static/index.html`](static/index.html) is depreca
 
 | Component | Status |
 |---|---|
-| Agent roster + architecture | ✅ Designed |
-| Skill contracts | 🔄 In progress |
-| Map Extraction Agent | 🔄 In progress |
-| Generator Agent | 🔄 In progress |
-| Eval Agent | 🔄 In progress |
-| Revision Agent | 🔄 In progress |
-| Orchestrator | 🔄 In progress |
+| Orchestrator + core loop (Generator, Eval, Revision) | ✅ Shipped |
+| Doctor / Rules Doctor (surgical repair) | ✅ Shipped |
+| Judge (candidate selection) | ✅ Shipped |
+| Prerequisites L1 (within-chapter) | ✅ Shipped |
+| Chapter Relevance + Prerequisites L2 (cross-chapter) | ✅ Shipped |
+| FastAPI backend + SSE streaming | ✅ Shipped |
+| Live dashboard (pipeline console + analytics) | ✅ Shipped |
 
 ---
 
