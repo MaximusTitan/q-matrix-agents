@@ -167,23 +167,142 @@ function ChapterRow({
   );
 }
 
-function GroupSection({
-  group,
-  selected,
-  onSelect,
-}: {
-  group: AnalyticsResponse["groups"][number];
-  selected: SelectedChapter | null;
-  onSelect: (c: SelectedChapter) => void;
-}) {
-  const [open, setOpen] = useState(true);
-  const counts = group.chapters.reduce(
+function countByStatus(chapters: AnalyticsChapter[]): Record<ChapterStatus, number> {
+  return chapters.reduce(
     (acc, c) => {
       acc[c.status] += 1;
       return acc;
     },
     { confirmed: 0, escalated: 0, mapped: 0 } as Record<ChapterStatus, number>
   );
+}
+
+function StatusCounts({ counts }: { counts: Record<ChapterStatus, number> }) {
+  return (
+    <span className="ml-auto flex items-center gap-2 text-[10px] tabular-nums">
+      {counts.confirmed > 0 && (
+        <span className="text-[var(--qm-green)]">✓ {counts.confirmed}</span>
+      )}
+      {counts.escalated > 0 && (
+        <span className="text-[var(--qm-red)]">✕ {counts.escalated}</span>
+      )}
+      {counts.mapped > 0 && (
+        <span className="text-[var(--qm-amber)]">◔ {counts.mapped}</span>
+      )}
+    </span>
+  );
+}
+
+// Board → Subject → Grade tree built from the flat (board, subject, grade)
+// group list the API returns, so each level can be collapsed independently.
+interface GradeNode {
+  grade: string;
+  chapters: AnalyticsChapter[];
+}
+interface SubjectNode {
+  subject: string;
+  grades: GradeNode[];
+}
+interface BoardNode {
+  board: string;
+  subjects: SubjectNode[];
+}
+
+function buildBoardTree(groups: AnalyticsResponse["groups"]): BoardNode[] {
+  const boards = new Map<string, Map<string, Map<string, AnalyticsChapter[]>>>();
+  for (const g of groups) {
+    const subjects = boards.get(g.board) ?? new Map();
+    boards.set(g.board, subjects);
+    const grades = subjects.get(g.subject) ?? new Map();
+    subjects.set(g.subject, grades);
+    grades.set(g.grade, g.chapters);
+  }
+  return Array.from(boards.entries()).map(([board, subjects]) => ({
+    board,
+    subjects: Array.from(subjects.entries()).map(([subject, grades]) => ({
+      subject,
+      grades: Array.from(grades.entries()).map(([grade, chapters]) => ({
+        grade,
+        chapters,
+      })),
+    })),
+  }));
+}
+
+function GradeSection({
+  board,
+  subject,
+  node,
+  selected,
+  onSelect,
+}: {
+  board: string;
+  subject: string;
+  node: GradeNode;
+  selected: SelectedChapter | null;
+  onSelect: (c: SelectedChapter) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const counts = countByStatus(node.chapters);
+
+  return (
+    <div className="rounded-lg border border-border bg-card">
+      <button
+        onClick={() => setOpen((p) => !p)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+      >
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+        )}
+        <span className="text-xs font-bold tracking-wide">{node.grade}</span>
+        <StatusCounts counts={counts} />
+      </button>
+      {open && (
+        <div className="space-y-1 border-t border-border p-2">
+          {node.chapters.map((c) => {
+            const active =
+              !!selected &&
+              selected.board === board &&
+              selected.subject === subject &&
+              selected.grade === node.grade &&
+              selected.chapter === c.chapter;
+            return (
+              <ChapterRow
+                key={c.chapter}
+                chapter={c}
+                active={active}
+                onClick={() =>
+                  onSelect({
+                    board,
+                    subject,
+                    grade: node.grade,
+                    chapter: c.chapter,
+                  })
+                }
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SubjectSection({
+  board,
+  node,
+  selected,
+  onSelect,
+}: {
+  board: string;
+  node: SubjectNode;
+  selected: SelectedChapter | null;
+  onSelect: (c: SelectedChapter) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const counts = countByStatus(node.grades.flatMap((g) => g.chapters));
 
   return (
     <div className="rounded-lg border border-border bg-card">
@@ -196,46 +315,66 @@ function GroupSection({
         ) : (
           <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
         )}
-        <span className="text-xs font-bold tracking-wide">
-          {group.board} · {group.subject} · {group.grade}
-        </span>
-        <span className="ml-auto flex items-center gap-2 text-[10px] tabular-nums">
-          {counts.confirmed > 0 && (
-            <span className="text-[var(--qm-green)]">✓ {counts.confirmed}</span>
-          )}
-          {counts.escalated > 0 && (
-            <span className="text-[var(--qm-red)]">✕ {counts.escalated}</span>
-          )}
-          {counts.mapped > 0 && (
-            <span className="text-[var(--qm-amber)]">◔ {counts.mapped}</span>
-          )}
-        </span>
+        <span className="text-xs font-bold tracking-wide">{node.subject}</span>
+        <StatusCounts counts={counts} />
       </button>
       {open && (
-        <div className="space-y-1 border-t border-border p-2">
-          {group.chapters.map((c) => {
-            const active =
-              !!selected &&
-              selected.board === group.board &&
-              selected.subject === group.subject &&
-              selected.grade === group.grade &&
-              selected.chapter === c.chapter;
-            return (
-              <ChapterRow
-                key={c.chapter}
-                chapter={c}
-                active={active}
-                onClick={() =>
-                  onSelect({
-                    board: group.board,
-                    subject: group.subject,
-                    grade: group.grade,
-                    chapter: c.chapter,
-                  })
-                }
-              />
-            );
-          })}
+        <div className="space-y-2 border-t border-border p-2">
+          {node.grades.map((g) => (
+            <GradeSection
+              key={g.grade}
+              board={board}
+              subject={node.subject}
+              node={g}
+              selected={selected}
+              onSelect={onSelect}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BoardSection({
+  node,
+  selected,
+  onSelect,
+}: {
+  node: BoardNode;
+  selected: SelectedChapter | null;
+  onSelect: (c: SelectedChapter) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const counts = countByStatus(
+    node.subjects.flatMap((s) => s.grades.flatMap((g) => g.chapters))
+  );
+
+  return (
+    <div className="rounded-lg border border-border bg-card">
+      <button
+        onClick={() => setOpen((p) => !p)}
+        className="flex w-full items-center gap-2 px-3 py-3 text-left"
+      >
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+        )}
+        <span className="text-sm font-bold tracking-wide">{node.board}</span>
+        <StatusCounts counts={counts} />
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-border p-2">
+          {node.subjects.map((s) => (
+            <SubjectSection
+              key={s.subject}
+              board={node.board}
+              node={s}
+              selected={selected}
+              onSelect={onSelect}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -777,10 +916,10 @@ export function AnalyticsPanel({
             >
               <ScrollArea className="h-full">
                 <div className="space-y-3 pr-2">
-                  {data.groups.map((g) => (
-                    <GroupSection
-                      key={`${g.board}/${g.subject}/${g.grade}`}
-                      group={g}
+                  {buildBoardTree(data.groups).map((b) => (
+                    <BoardSection
+                      key={b.board}
+                      node={b}
                       selected={selected}
                       onSelect={onSelect}
                     />

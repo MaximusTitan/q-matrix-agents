@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from orchestrator import run_pipeline
-from skills.kb_access import load_prompt
+from skills.kb_access import load_prompt, list_escalations
 
 KB_ROOT = os.getenv("KB_ROOT")
 
@@ -74,13 +74,10 @@ def check_concept_maps(board, subject):
 
 
 def check_escalations(board, subject):
-    """Check for any escalation folders."""
-    esc_root = Path(KB_ROOT) / "escalations"
-    if not esc_root.exists():
-        return []
+    """Check for any escalation folders for the given board/subject."""
     return [
-        d.name for d in esc_root.iterdir()
-        if d.is_dir() and d.name.startswith(f"{board}_{subject}")
+        esc["folder"] for esc in list_escalations()
+        if esc["board"] == board and esc["subject"] == subject
     ]
 
 

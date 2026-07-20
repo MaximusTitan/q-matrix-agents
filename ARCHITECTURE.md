@@ -94,7 +94,7 @@ q-matrix-kb/
 ├── rulesets/
 │   ├── universal_rules.md                              ← manually seeded; the ONLY hand-written input
 │   └── {board}/{subject}/{grade}/rules.md              ← written when a human rejects a passed CSV
-└── escalations/{board}_{subject}_{grade}_{chapter}_{date}/  ← run.json + report.md snapshot
+└── escalations/{board}/{subject}/{grade}/{chapter}/{date}/  ← run.json + report.md snapshot
 ```
 
 **Prompts are never hand-written.** They emerge: cold-start generation runs off

@@ -59,11 +59,6 @@ def _universal_rules_path() -> str:
 def _grade_rules_path(board: str, subject: str, grade: str) -> str:
     return os.path.join(KB_ROOT, "rulesets", board, subject, grade, "rules.md")
 
-def _escalation_path(board: str, subject: str, grade: str, chapter: str, date: str) -> str:
-    filename = f"{board}_{subject}_{grade}_{chapter}_{date}.md"
-    return os.path.join(KB_ROOT, "escalations", filename)
-
-
 # ─── Curriculum Docs ─────────────────────────────────────────────────────────
 
 def load_curriculum_docs(board: str, subject: str, grade: str) -> str:
@@ -484,8 +479,8 @@ def write_escalation(
     date so a chapter's failure history is preserved. The folder is a self-contained
     snapshot of the run that escalated.
 
-    Folder structure:
-        escalations/{board}_{subject}_{grade}_{chapter}_{date}/
+    Folder structure (mirrors textbooks/{board}/{subject}/{grade}/{chapter}/):
+        escalations/{board}/{subject}/{grade}/{chapter}/{date}/
             report.md                         ← derived human-readable summary
             run.json                          ← structured record (same as run/run.json)
             attempt_{n}_prompt.md, *.csv      ← every artifact of the run
@@ -497,10 +492,7 @@ def write_escalation(
     Returns:
         Path to the escalation folder.
     """
-    safe_chapter = chapter.replace(" ", "_")
-    safe_grade   = grade.replace(" ", "_")
-    folder_name  = f"{board}_{subject}_{safe_grade}_{safe_chapter}_{date}"
-    folder_path  = os.path.join(KB_ROOT, "escalations", folder_name)
+    folder_path = os.path.join(KB_ROOT, "escalations", board, subject, grade, chapter, date)
     create_directory(folder_path)
 
     write_file(os.path.join(folder_path, "report.md"), render_report_md(record))
@@ -696,11 +688,13 @@ def _parse_report_attempts(text: str) -> list[dict]:
 
 def list_escalations() -> list[dict]:
     """
-    Enumerate populated escalation folders under KB_ROOT/escalations/.
+    Enumerate populated escalation folders under
+    KB_ROOT/escalations/{board}/{subject}/{grade}/{chapter}/{date}/.
 
-    Only folders containing a report.md are returned (empty escalation folders,
-    of which there are several in the KB, are ignored). Identifiers come from the
-    parsed report header, which preserves the original grade/chapter spelling.
+    Only leaf folders containing a report.md are returned (empty escalation
+    folders, of which there are several in the KB, are ignored). Identifiers come
+    from the parsed report header, which preserves the original grade/chapter
+    spelling — the same values used for the directory names themselves.
 
     Returns:
         One dict per escalation:
@@ -708,18 +702,26 @@ def list_escalations() -> list[dict]:
                 "board", "subject", "grade", "chapter", "date": str,
                 "failed_check": str,          # "check1" | "check2" | "both" | ""
                 "total_attempts": int | None,
-                "folder": str,                # folder name (not full path)
+                "folder": str,                # path relative to escalations/, e.g.
+                                               # "CBSE/Maths/Grade 7/Chapter2_.../2026-06-26"
             }
     """
     root = os.path.join(KB_ROOT, "escalations")
     escalations: list[dict] = []
-    for folder in _list_child_dirs(root):
-        report_path = os.path.join(root, folder, "report.md")
-        if not file_exists(report_path):
-            continue
-        header = _parse_report_header(read_file(report_path))
-        header["folder"] = folder
-        escalations.append(header)
+    for board in _list_child_dirs(root):
+        for subject in _list_child_dirs(os.path.join(root, board)):
+            for grade in _list_child_dirs(os.path.join(root, board, subject)):
+                grade_path = os.path.join(root, board, subject, grade)
+                for chapter in _list_child_dirs(grade_path):
+                    chapter_path = os.path.join(grade_path, chapter)
+                    for date in _list_child_dirs(chapter_path):
+                        folder = os.path.join(board, subject, grade, chapter, date)
+                        report_path = os.path.join(root, folder, "report.md")
+                        if not file_exists(report_path):
+                            continue
+                        header = _parse_report_header(read_file(report_path))
+                        header["folder"] = folder
+                        escalations.append(header)
     return escalations
 
 
@@ -728,8 +730,8 @@ def load_escalation_report(folder: str) -> dict:
     Load and parse a single escalation folder's report.md plus its sibling files.
 
     Args:
-        folder: The escalation folder NAME (as returned by list_escalations),
-                not a full path.
+        folder: The escalation folder's path relative to escalations/ (as returned
+                by list_escalations), not an absolute path.
 
     Returns:
         {
@@ -773,7 +775,7 @@ def list_all_run_records() -> list[dict]:
     Two on-disk sources hold run.json:
         textbooks/{board}/{subject}/{grade}/{chapter}/run/run.json
             latest run only (pass or fail) — overwritten every re-run.
-        escalations/{board}_{subject}_{grade}_{chapter}_{date}/run.json
+        escalations/{board}/{subject}/{grade}/{chapter}/{date}/run.json
             one snapshot per historical failure, accumulated by date, never
             overwritten (write_escalation persists a full run.json here too,
             not just report.md).
