@@ -316,10 +316,13 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
 
     Returns:
         (final_csv: str, checkpoint_path: str | None, usage: dict, cost_usd: float,
-         chapter_breakdown: dict) — chapter_breakdown partitions every sibling chapter
-        into "chapters_with_edges", "chapters_screened_no_edges", and
+         chapter_breakdown: dict, failed: bool) — chapter_breakdown partitions every
+        sibling chapter into "chapters_with_edges", "chapters_screened_no_edges", and
         "chapters_excluded_by_screen" ({} in the early-return cases below, where no
-        sibling analysis ever ran).
+        sibling analysis ever ran). `failed` is True whenever the screen or the L2
+        agent itself errored — as opposed to running successfully and genuinely
+        finding no cross-chapter prerequisites — so callers can avoid recording an
+        errored run as a confirmed "no prerequisites" result.
     """
     emit("agent_started", {
         "agent":   "PrerequisitesL2",
@@ -332,7 +335,7 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
                "L1 prerequisites mapped first.")
         print(f"[orchestrator] {msg}")
         emit("agent_completed", {"agent": "PrerequisitesL2", "output": {"error": msg, "checkpoint": None}})
-        return "", None, {}, 0.0, {}
+        return "", None, {}, 0.0, {}, True
 
     try:
         target_rows = parse_csv(load_confirmed_csv(board, subject, grade, chapter))
@@ -342,7 +345,7 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
             "agent": "PrerequisitesL2",
             "output": {"error": f"target CSV unreadable: {e}", "checkpoint": None},
         })
-        return "", None, {}, 0.0, {}
+        return "", None, {}, 0.0, {}, True
 
     sibling_rows_by_chapter = load_confirmed_csvs_for_grade_subject(
         board, subject, grade, exclude_chapter=chapter
@@ -367,6 +370,7 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
 
     usage = {}
     cost = 0.0
+    failed = False
     try:
         screen_result = screen_chapter_relevance(
             chapter, target_concepts, target_skills, sibling_items, model=model
@@ -378,10 +382,12 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
     except Exception as e:
         # Defensive: a screening failure must not balloon into a full O(chapters^2)
         # sweep — fall back to no candidate chapters at all (mirrors agents' own
-        # fail-to-empty pattern), same as any other L2 failure below.
+        # fail-to-empty pattern), same as any other L2 failure below. Mark `failed`
+        # so this is never persisted as a confirmed "no prerequisites" result.
         print(f"[orchestrator] Chapter relevance screen failed — no candidate chapters: {e}")
         relevant_chapters = set()
         screen_warnings = [f"chapter_relevance screen error: {e}"]
+        failed = True
 
     candidate_pool = {ch: sibling_items[ch] for ch in relevant_chapters if ch in sibling_items}
 
@@ -398,11 +404,14 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
         cost         += result.get("cost_usd", 0.0)
     except Exception as e:
         # Defensive: never let an L2 failure break an already-confirmed chapter.
+        # Mark `failed` so this is never persisted as a confirmed "no prerequisites"
+        # result — the empty columns below are a safe placeholder, not an answer.
         print(f"[orchestrator] L2 prerequisite mapping failed — persisting empty columns: {e}")
         enriched_rows = [{**r, L2_COLUMNS[0]: [], L2_COLUMNS[1]: []} for r in target_rows]
         warnings      = screen_warnings + [f"prerequisite_l2 agent error: {e}"]
         concept_edges = {}
         skill_edges   = {}
+        failed        = True
 
     # Preserve existing L1 columns already present on the target rows — only add L2.
     final_csv = enriched_csv_to_text(enriched_rows, L1_COLUMNS + L2_COLUMNS)
@@ -446,9 +455,10 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
             "usage":              usage,
             "cost_usd":           cost,
             "model":              model,
+            "failed":             failed,
         },
     })
-    return final_csv, checkpoint, usage, cost, chapter_breakdown
+    return final_csv, checkpoint, usage, cost, chapter_breakdown, failed
 
 
 def run_l2_prerequisite_only(
@@ -485,7 +495,7 @@ def run_l2_prerequisite_only(
     })
     emit("attempt_started", {"attempt": 1, "max_attempts": 1})
 
-    final_csv, checkpoint, prereq_usage, prereq_cost, chapter_breakdown = _run_l2_prerequisite_phase(
+    final_csv, checkpoint, prereq_usage, prereq_cost, chapter_breakdown, failed = _run_l2_prerequisite_phase(
         board, subject, grade, chapter, emit=emit,
         model=_model_for(models, "prerequisite_l2"),
     )
@@ -502,12 +512,26 @@ def run_l2_prerequisite_only(
         "prerequisite_l2", prereq_usage, prereq_cost, model=_model_for(models, "prerequisite_l2"),
         extra=chapter_breakdown,
     )
+    # A screen/agent error must never be recorded as a confirmed "no prerequisites"
+    # pass — that hid the difference between "genuinely none" and "the call failed"
+    # (empty L2 columns were persisted as if the run succeeded even on a screen error).
     builder.finalize(
-        final_status="passed", failed_check=None,
+        final_status="failed" if failed else "passed",
+        failed_check="prerequisite_l2_error" if failed else None,
         final_csv=final_csv, final_csv_name="confirmed.csv",
         confirmed_checkpoint=bool(checkpoint),
         has_prereqs=confirmed_csv_has_l2_prereqs(board, subject, grade, chapter),
     )
+
+    if failed:
+        record, artifacts = builder.build()
+        _persist_run_record(board, subject, grade, chapter, record, artifacts,
+                            render_report_md(record))
+        emit("error", {"message": "L2 prerequisite mapping encountered an error — "
+                                   "empty columns were persisted as a placeholder, not a confirmed result. "
+                                   "See run report for details."})
+        return {"passed": False, "error": "L2 prerequisite mapping failed (see run report).",
+                "csv": final_csv, "checkpoint": checkpoint}
     record, artifacts = builder.build()
     _persist_run_record(board, subject, grade, chapter, record, artifacts,
                         render_report_md(record))
