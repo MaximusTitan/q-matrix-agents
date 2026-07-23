@@ -130,6 +130,13 @@ chapter: {chapter}
     skill_count   = len(concept_skill_map["skills"])
     print(f"[map_extraction] Extracted {concept_count} concepts, {skill_count} skills")
 
+    # Step 6b — Force identifiers to match the requested path, so the LLM's
+    # echoed values can never drift from where this map is actually saved.
+    concept_skill_map["board"] = board
+    concept_skill_map["subject"] = subject
+    concept_skill_map["grade"] = grade
+    concept_skill_map["chapter"] = chapter
+
     # Step 7 — Save to KB (before attaching usage — that must not pollute this artifact)
     save_concept_skill_map(board, subject, grade, chapter, concept_skill_map)
     print(f"[map_extraction] Saved concept-skill-map to KB")
