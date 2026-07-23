@@ -31,7 +31,64 @@ Coverage runs in two passes:
 import json
 import re
 from skills.csv_utils import parse_csv
-from skills.llm import call_llm, add_usage, DEFAULT_MODEL
+from skills.llm import call_llm_structured, add_usage, DEFAULT_MODEL
+
+
+# A dict keyed by arbitrary expected-item strings (not known ahead of time), each
+# valued as a list of covering actual-item strings.
+_MATCH_MAP_SCHEMA = {
+    "type": "object",
+    "additionalProperties": {"type": "array", "items": {"type": "string"}},
+}
+
+COVERAGE_CHECK_TOOL = {
+    "name": "submit_coverage_check",
+    "description": "Submit the coverage verdict for expected vs actual concepts/skills.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "missing_concepts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Expected concepts (exact strings from EXPECTED) not covered by any actual concept.",
+            },
+            "missing_skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Expected skills (exact strings from EXPECTED) not covered by any actual skill.",
+            },
+            "matched_concepts": {
+                **_MATCH_MAP_SCHEMA,
+                "description": "Map of expected concept (exact string) -> covering actual concept(s). Include only covered items.",
+            },
+            "matched_skills": {
+                **_MATCH_MAP_SCHEMA,
+                "description": "Map of expected skill (exact string) -> covering actual skill(s). Include only covered items.",
+            },
+            "reasoning": {"type": "string", "description": "One sentence explaining your decision."},
+        },
+        "required": ["missing_concepts", "missing_skills", "matched_concepts", "matched_skills", "reasoning"],
+    },
+}
+
+RECONCILE_TOOL = {
+    "name": "submit_reconciliation",
+    "description": "Submit reclassification of previously-missing items now found to be covered.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "now_covered_concepts": {
+                **_MATCH_MAP_SCHEMA,
+                "description": "Map of expected concept -> covering actual concept(s). Include only items reclassified as covered.",
+            },
+            "now_covered_skills": {
+                **_MATCH_MAP_SCHEMA,
+                "description": "Map of expected skill -> covering actual skill(s). Include only items reclassified as covered.",
+            },
+        },
+        "required": ["now_covered_concepts", "now_covered_skills"],
+    },
+}
 
 
 SYSTEM_PROMPT = """You are a curriculum coverage auditor.
@@ -62,16 +119,7 @@ Rules:
   "Properties of isosceles triangles" are DIFFERENT concepts.
 - In matched_concepts/matched_skills, use the exact strings from the expected and actual lists.
 
-Respond ONLY with a valid JSON object. No explanation, no markdown, no preamble.
-
-Format:
-{
-  "missing_concepts": ["concept as it appears in expected list"],
-  "missing_skills": ["skill as it appears in expected list"],
-  "matched_concepts": {"expected concept": ["actual concept(s) that cover it"]},
-  "matched_skills": {"expected skill": ["actual skill(s) that cover it"]},
-  "reasoning": "one sentence explaining your decision"
-}"""
+Call the submit_coverage_check tool with your verdict."""
 
 
 RECONCILE_PROMPT = """You are a curriculum coverage auditor performing a focused second review.
@@ -100,14 +148,8 @@ Rules:
 - Do NOT merge genuinely different items. "Properties of equilateral triangles" and
   "Properties of isosceles triangles" are DIFFERENT — lexical similarity alone is not enough.
 
-Respond ONLY with a valid JSON object. No explanation, no markdown, no preamble.
-
-Format:
-{
-  "now_covered_concepts": {"expected concept": ["covering actual concept(s)"]},
-  "now_covered_skills": {"expected skill": ["covering actual skill(s)"]}
-}
-Include only items you are reclassifying as covered. Use the exact strings given to you."""
+Call the submit_reconciliation tool with your verdict. Include only items you are
+reclassifying as covered. Use the exact strings given to you."""
 
 
 # Similarity is a display/ranking HINT, not a recall gate — the reconciliation LLM
@@ -154,16 +196,6 @@ def _compute_extras(actual: list, matched: dict) -> list:
     """Actual items not referenced by any matched_* value (case-insensitive)."""
     used = _matched_values_lower(matched)
     return [a for a in actual if a.strip().lower() not in used]
-
-
-def _strip_fences(raw: str) -> str:
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        cleaned = "\n".join(
-            l for l in lines if not l.strip().startswith("```")
-        ).strip()
-    return cleaned
 
 
 def _normalize_matched(matched: dict) -> dict:
@@ -264,21 +296,7 @@ def _reconcile(
         + json.dumps({"concepts": concept_cands, "skills": skill_cands}, indent=2)
     )
 
-    raw, usage, cost_usd = call_llm(RECONCILE_PROMPT, user_content, model=model)
-    try:
-        result = json.loads(_strip_fences(raw))
-    except json.JSONDecodeError:
-        # Best-effort — on parse failure change nothing, but keep the audit trail.
-        return {
-            "now_covered_concepts": {},
-            "now_covered_skills": {},
-            "detail": {
-                "concepts": build_detail(missing_concepts, concept_cands, extra_concepts, {}),
-                "skills":   build_detail(missing_skills,   skill_cands,   extra_skills,   {}),
-            },
-            "usage": usage,
-            "cost_usd": cost_usd,
-        }
+    result, usage, cost_usd = call_llm_structured(RECONCILE_PROMPT, user_content, RECONCILE_TOOL, model=model)
 
     now_covered_concepts = _normalize_matched(result.get("now_covered_concepts", {}))
     now_covered_skills   = _normalize_matched(result.get("now_covered_skills",   {}))
@@ -340,26 +358,7 @@ ACTUAL (from generated CSV):
 Concepts: {json.dumps(actual_concepts, indent=2)}
 Skills:   {json.dumps(actual_skills, indent=2)}"""
 
-    raw_response, usage_total, cost_total = call_llm(SYSTEM_PROMPT, user_content, model=model)
-
-    try:
-        result = json.loads(_strip_fences(raw_response))
-    except json.JSONDecodeError:
-        return {
-            "passed":           False,
-            "missing_concepts": [],
-            "missing_skills":   [],
-            "matched_concepts": {},
-            "matched_skills":   {},
-            "extra_concepts":   actual_concepts,
-            "extra_skills":     actual_skills,
-            "reconciliation":   {"concepts": {}, "skills": {}},
-            "feedback":         ["Check 2 evaluation failed — LLM returned unparseable output."],
-            "reasoning":        "Parse error",
-            "usage":            usage_total,
-            "cost_usd":         cost_total,
-            "model":            model,
-        }
+    result, usage_total, cost_total = call_llm_structured(SYSTEM_PROMPT, user_content, COVERAGE_CHECK_TOOL, model=model)
 
     missing_concepts  = result.get("missing_concepts",  [])
     missing_skills    = result.get("missing_skills",    [])

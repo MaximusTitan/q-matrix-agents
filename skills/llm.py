@@ -26,7 +26,6 @@ _client = openai.OpenAI(
 )
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-5"
-MAX_TOKENS    = 8096
 MAX_RETRIES   = 3
 RETRY_DELAY   = 5  # seconds
 
@@ -114,7 +113,6 @@ def call_llm(system_prompt: str, user_content: str, model: str = DEFAULT_MODEL) 
     def make_request():
         response = _client.chat.completions.create(
             model=model,
-            max_tokens=MAX_TOKENS,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
@@ -155,7 +153,6 @@ def call_llm_structured(
     def make_request():
         response = _client.chat.completions.create(
             model=model,
-            max_tokens=MAX_TOKENS,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},

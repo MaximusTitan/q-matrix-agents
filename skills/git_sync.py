@@ -53,17 +53,36 @@ def pull_kb() -> None:
 
 def push_kb(board: str, subject: str, grade: str, chapter: str) -> None:
     """
-    Stage all changes in the KB repo, commit, and push.
+    Stage, commit, and push ONLY the paths this chapter's run could have touched.
     Called at the end of every orchestrator run after any writes.
 
+    Deliberately scoped rather than `git add .` — a run for one chapter must never
+    sweep up a concurrent run's changes to other chapters/grades into its commit.
+    (`git add .` previously did exactly this: a single-chapter commit ended up
+    bundling 455 files across 28 unrelated chapters from a concurrently-running
+    batch.) `git commit` is scoped with the same pathspec so that even if another
+    process's `git add` interleaves with this one, only this chapter's paths are
+    committed here — anything else stays staged for that other process's own commit.
+
     Args:
-        board, subject, grade, chapter: Used to construct the commit message.
+        board, subject, grade, chapter: Used to construct the commit message and
+                                        to scope which paths are staged/committed.
 
     Raises:
         RuntimeError: If the push fails.
     """
-    # Check if there's anything to commit
-    status = _run(["git", "status", "--porcelain"], cwd=KB_ROOT)
+    paths = [
+        os.path.join("textbooks", board, subject, grade, chapter),
+        os.path.join("escalations", board, subject, grade, chapter),
+        os.path.join("rulesets", board, subject, grade, "rules.md"),
+    ]
+    existing_paths = [p for p in paths if os.path.exists(os.path.join(KB_ROOT, p))]
+    if not existing_paths:
+        print("[git_sync] No KB changes to push.")
+        return
+
+    # Check if there's anything to commit, scoped to this chapter's own paths only.
+    status = _run(["git", "status", "--porcelain", "--"] + existing_paths, cwd=KB_ROOT)
     if not status:
         print("[git_sync] No KB changes to push.")
         return
@@ -71,10 +90,10 @@ def push_kb(board: str, subject: str, grade: str, chapter: str) -> None:
     commit_msg = f"agent run: {board}/{subject}/{grade}/{chapter}"
 
     print(f"[git_sync] Staging changes...")
-    _run(["git", "add", "."], cwd=KB_ROOT)
+    _run(["git", "add", "--"] + existing_paths, cwd=KB_ROOT)
 
     print(f"[git_sync] Committing: {commit_msg}")
-    _run(["git", "commit", "-m", commit_msg], cwd=KB_ROOT)
+    _run(["git", "commit", "-m", commit_msg, "--"] + existing_paths, cwd=KB_ROOT)
 
     print(f"[git_sync] Pushing to remote...")
     _run(["git", "push"], cwd=KB_ROOT)
