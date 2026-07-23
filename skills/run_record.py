@@ -175,11 +175,17 @@ class RunRecordBuilder:
             "usage": usage or dict(_ZERO_USAGE), "cost_usd": cost_usd, "model": model,
         }
 
-    def add_pipeline_usage(self, agent: str, usage: dict, cost_usd: float, model=None) -> None:
+    def add_pipeline_usage(self, agent: str, usage: dict, cost_usd: float, model=None,
+                           extra: dict | None = None) -> None:
         """Record usage for a pipeline-level agent that runs outside any attempt
-        (Map Extraction, Prerequisite mapping)."""
+        (Map Extraction, Prerequisite mapping).
+
+        ``extra`` merges in agent-specific fields beyond usage/cost/model (e.g.
+        prerequisite_l2's chapter breakdown) — passed straight through to run.json.
+        """
         self._pipeline_agents[agent] = {
             "usage": usage or dict(_ZERO_USAGE), "cost_usd": cost_usd, "model": model,
+            **(extra or {}),
         }
 
     def set_judge(self, *, selected_by, candidate_count, chosen_id, rationale,

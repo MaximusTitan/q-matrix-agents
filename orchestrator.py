@@ -16,7 +16,6 @@ CLI Usage:
 """
 
 import argparse
-import re
 import sys
 from datetime import date
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +29,7 @@ from agents.rules_doctor   import run as run_rules_doctor
 from agents.judge          import run as run_judge
 from agents.prerequisite      import run as run_prerequisite, L1_COLUMNS
 from agents.prerequisite_l2   import run as run_prerequisite_l2, L2_COLUMNS
+from agents.prerequisite_l3   import run as run_prerequisite_l3, L3_COLUMNS
 from agents.chapter_relevance import screen as screen_chapter_relevance
 
 from skills.kb_access import (
@@ -44,9 +44,12 @@ from skills.kb_access import (
     save_run_record,
     confirmed_csv_has_prereqs,
     confirmed_csv_has_l2_prereqs,
+    confirmed_csv_has_l3_prereqs,
     load_confirmed_csv,
     grade_subject_l1_complete,
     load_confirmed_csvs_for_grade_subject,
+    subject_prior_grades_l1_complete,
+    load_confirmed_csvs_for_subject_prior_grades,
 )
 from skills.csv_utils import parse_csv, enriched_csv_to_text, validate_csv_schema
 from skills.git_sync import pull_kb, push_kb
@@ -64,6 +67,7 @@ MAX_PLATEAU_ROUNDS = 2  # consecutive non-improving attempts before escalating e
 AGENT_KEYS = (
     "map_extraction", "generator", "eval", "doctor",
     "rules_doctor", "revision", "judge", "prerequisite", "prerequisite_l2",
+    "prerequisite_l3",
 )
 
 # Per-agent defaults, used when the caller's `models` dict omits a key. Map Extraction,
@@ -79,8 +83,23 @@ AGENT_DEFAULT_MODELS = {
     "rules_doctor":    "openai/gpt-5.4-mini",
     "revision":        "openai/gpt-5.4-mini",
     "judge":           "openai/gpt-5.4-mini",
-    "prerequisite":    "openai/gpt-5.4-mini",
-    "prerequisite_l2": "openai/gpt-5.4-mini",
+    # gpt-5.4-mini was observed returning a near-empty response (17 output tokens,
+    # zero edges asserted) for CBSE/Environmental Science/Grade 5/Chapter02_Journey_
+    # of_a_River, versus 200-2000+ tokens and real edges for every sibling chapter
+    # in the same book; sonnet-5 found 15 skill + 10 concept edges on a re-run,
+    # 2026-07-21.
+    "prerequisite":    "anthropic/claude-sonnet-5",
+    # L2 needs to judge many cross-chapter candidates and reliably act on its own
+    # accept/reject reasoning within one large structured response — gpt-5.4-mini
+    # was observed asserting edges its own stated reason explicitly rejected
+    # (e.g. CBSE/Maths/Grade 10/Chapter01_Real_Numbers, 2026-07-21); sonnet-5
+    # confirmed correct (zero false-positive edges) on the same chapter.
+    "prerequisite_l2": "anthropic/claude-sonnet-5",
+    # L3's candidate pool spans every earlier grade and its prompt carries the extra
+    # "reject long-assumed foundational skills" judgment call on top of everything L2
+    # already has to get right — defaults to the same model as L2 pending its own
+    # dedicated evaluation; revisit once L3 has real run data.
+    "prerequisite_l3": "anthropic/claude-sonnet-5",
 }
 
 
@@ -167,6 +186,8 @@ def _run_prerequisite_phase(board, subject, grade, chapter, attempt, csv_text, e
     emit("agent_completed", {
         "agent": "Prerequisites",
         "output": {
+            "concept_edges":      concept_edges,
+            "skill_edges":        skill_edges,
             "concept_edge_count": sum(len(v) for v in concept_edges.values()),
             "skill_edge_count":   sum(len(v) for v in skill_edges.values()),
             "warnings":           warnings,
@@ -177,20 +198,6 @@ def _run_prerequisite_phase(board, subject, grade, chapter, attempt, csv_text, e
         },
     })
     return final_csv, checkpoint, usage, cost
-
-
-_CHAPTER_ORDER_RE = re.compile(r"^\D*0*(\d+)")
-
-
-def _chapter_order(chapter: str) -> int | None:
-    """
-    Leading number in a chapter folder name (e.g. "Chapter05_Arithmetic_Progressions"
-    -> 5), used as a curriculum-sequence signal for L2 mapping. None if the name
-    doesn't start with a number after any non-digit prefix (an unconventional chapter
-    name) — callers must treat that as "order unknown", not "order zero".
-    """
-    m = _CHAPTER_ORDER_RE.match(chapter)
-    return int(m.group(1)) if m else None
 
 
 _IDENTIFIER_COLUMNS = ("board", "subject", "grade", "chapter")
@@ -308,7 +315,11 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
     this one actually executing on a background thread.
 
     Returns:
-        (final_csv: str, checkpoint_path: str | None, usage: dict, cost_usd: float)
+        (final_csv: str, checkpoint_path: str | None, usage: dict, cost_usd: float,
+         chapter_breakdown: dict) — chapter_breakdown partitions every sibling chapter
+        into "chapters_with_edges", "chapters_screened_no_edges", and
+        "chapters_excluded_by_screen" ({} in the early-return cases below, where no
+        sibling analysis ever ran).
     """
     emit("agent_started", {
         "agent":   "PrerequisitesL2",
@@ -321,7 +332,7 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
                "L1 prerequisites mapped first.")
         print(f"[orchestrator] {msg}")
         emit("agent_completed", {"agent": "PrerequisitesL2", "output": {"error": msg, "checkpoint": None}})
-        return "", None, {}, 0.0
+        return "", None, {}, 0.0, {}
 
     try:
         target_rows = parse_csv(load_confirmed_csv(board, subject, grade, chapter))
@@ -331,35 +342,19 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
             "agent": "PrerequisitesL2",
             "output": {"error": f"target CSV unreadable: {e}", "checkpoint": None},
         })
-        return "", None, {}, 0.0
+        return "", None, {}, 0.0, {}
 
     sibling_rows_by_chapter = load_confirmed_csvs_for_grade_subject(
         board, subject, grade, exclude_chapter=chapter
     )
 
-    # ── Curriculum-order gate ────────────────────────────────────────────────
-    # A chapter can only be a genuine prerequisite SOURCE if it comes earlier in
-    # the book — later chapters can never be prerequisites of an earlier one in a
-    # linear curriculum. Chapter folder names encode this order (Chapter01_...,
-    # Chapter02_...), so this is enforced deterministically, before either LLM call,
-    # rather than trusted to LLM judgment (which has no notion of book order at all
-    # and will otherwise assert semantically-plausible but directionally-backwards
-    # edges — e.g. treating a later "Polynomials" chapter as a prerequisite for an
-    # earlier "Real Numbers" chapter). Chapters whose name doesn't follow the
-    # numbering convention keep an unknown order and are never excluded by this gate.
-    target_order = _chapter_order(chapter)
-    order_excluded = []
-    if target_order is not None:
-        for ch in list(sibling_rows_by_chapter.keys()):
-            ch_order = _chapter_order(ch)
-            if ch_order is not None and ch_order > target_order:
-                order_excluded.append(ch)
-                del sibling_rows_by_chapter[ch]
-
-    if order_excluded:
-        print(f"[orchestrator] Excluded {len(order_excluded)} later chapter(s) by curriculum "
-              f"order (not eligible as prerequisite sources for {chapter}): {order_excluded}")
-
+    # Every other confirmed chapter in the same board/subject/grade is a candidate
+    # prerequisite source, regardless of curriculum position — chapter numbering
+    # is not a reliable proxy for pedagogical order (e.g. review/appendix chapters,
+    # or a later chapter whose material a student genuinely needs earlier). The
+    # chapter_relevance screen and agents/prerequisite_l2's own judgment (verbatim
+    # concept/skill matching plus "is this a genuine learning dependency") are the
+    # only gates — same as for any other candidate chapter.
     target_concepts = list({r.get("concept", "") for r in target_rows})
     target_skills   = list({r.get("skill", "")   for r in target_rows})
     sibling_items = {
@@ -372,16 +367,12 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
 
     usage = {}
     cost = 0.0
-    order_warnings = [
-        f"excluded by curriculum order (later chapter, not eligible as a prerequisite source): {ch}"
-        for ch in order_excluded
-    ]
     try:
         screen_result = screen_chapter_relevance(
             chapter, target_concepts, target_skills, sibling_items, model=model
         )
         relevant_chapters = set(screen_result.get("relevant_chapters", []))
-        screen_warnings = order_warnings + screen_result.get("warnings", [])
+        screen_warnings = screen_result.get("warnings", [])
         usage = add_usage(usage, screen_result.get("usage") or {})
         cost += screen_result.get("cost_usd", 0.0)
     except Exception as e:
@@ -390,7 +381,7 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
         # fail-to-empty pattern), same as any other L2 failure below.
         print(f"[orchestrator] Chapter relevance screen failed — no candidate chapters: {e}")
         relevant_chapters = set()
-        screen_warnings = order_warnings + [f"chapter_relevance screen error: {e}"]
+        screen_warnings = [f"chapter_relevance screen error: {e}"]
 
     candidate_pool = {ch: sibling_items[ch] for ch in relevant_chapters if ch in sibling_items}
 
@@ -423,13 +414,33 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
     except Exception as e:
         print(f"[orchestrator] Warning: failed to persist confirmed CSV — {e}")
 
+    # Partition every sibling chapter into exactly one bucket, so the dashboards can
+    # show which chapters contributed prerequisites, which were considered but didn't,
+    # and which never made it past the cheap relevance screen — before drilling into
+    # the specific concept/skill edges.
+    chapters_with_edges = sorted({
+        e["chapter"]
+        for edge_list in list(concept_edges.values()) + list(skill_edges.values())
+        for e in edge_list
+    })
+    chapters_screened_no_edges = sorted(relevant_chapters - set(chapters_with_edges))
+    chapters_excluded_by_screen = sorted(set(sibling_items.keys()) - relevant_chapters)
+    chapter_breakdown = {
+        "chapters_with_edges":         chapters_with_edges,
+        "chapters_screened_no_edges":  chapters_screened_no_edges,
+        "chapters_excluded_by_screen": chapters_excluded_by_screen,
+    }
+
     emit("agent_completed", {
         "agent": "PrerequisitesL2",
         "output": {
+            "concept_edges":      concept_edges,
+            "skill_edges":        skill_edges,
             "concept_edge_count": sum(len(v) for v in concept_edges.values()),
             "skill_edge_count":   sum(len(v) for v in skill_edges.values()),
             "sibling_chapter_count": len(sibling_items),
             "candidate_chapter_count": len(candidate_pool),
+            **chapter_breakdown,
             "warnings":           warnings,
             "checkpoint":         checkpoint,
             "usage":              usage,
@@ -437,7 +448,7 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
             "model":              model,
         },
     })
-    return final_csv, checkpoint, usage, cost
+    return final_csv, checkpoint, usage, cost, chapter_breakdown
 
 
 def run_l2_prerequisite_only(
@@ -474,7 +485,7 @@ def run_l2_prerequisite_only(
     })
     emit("attempt_started", {"attempt": 1, "max_attempts": 1})
 
-    final_csv, checkpoint, prereq_usage, prereq_cost = _run_l2_prerequisite_phase(
+    final_csv, checkpoint, prereq_usage, prereq_cost, chapter_breakdown = _run_l2_prerequisite_phase(
         board, subject, grade, chapter, emit=emit,
         model=_model_for(models, "prerequisite_l2"),
     )
@@ -488,7 +499,8 @@ def run_l2_prerequisite_only(
         mode="l2_prerequisite_only",
     )
     builder.add_pipeline_usage(
-        "prerequisite_l2", prereq_usage, prereq_cost, model=_model_for(models, "prerequisite_l2")
+        "prerequisite_l2", prereq_usage, prereq_cost, model=_model_for(models, "prerequisite_l2"),
+        extra=chapter_breakdown,
     )
     builder.finalize(
         final_status="passed", failed_check=None,
@@ -510,6 +522,256 @@ def run_l2_prerequisite_only(
         "checkpoint":      checkpoint,
     })
     print(f"\n[orchestrator] ✓ L2 prerequisite-only run complete")
+    return {"passed": True, "csv": final_csv, "checkpoint": checkpoint}
+
+
+def _run_l3_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAULT_MODEL):
+    """
+    Run Level-3 (cross-grade, same subject) prerequisite mapping for one target
+    chapter, persist the enriched CSV checkpoint, and emit PrerequisitesL3 agent
+    events.
+
+    Re-checks subject_prior_grades_l1_complete defensively — the API route already
+    gates this before spawning the run, but KB state could change between that check
+    and this one actually executing on a background thread.
+
+    Unlike L2 (one relevance screen over a single grade's siblings), L3's candidate
+    space spans every grade earlier than `grade`. To keep each screening call the
+    same bounded size as an L2 call regardless of how many prior grades exist, the
+    chapter_relevance screen is run ONCE PER EARLIER GRADE (same screen() function
+    L2 uses, unmodified) rather than once over the full multi-grade history or once
+    per chapter pair — this is the actual token-saving mechanism for L3.
+
+    Returns:
+        (final_csv: str, checkpoint_path: str | None, usage: dict, cost_usd: float,
+         chapter_breakdown: dict) — chapter_breakdown partitions every earlier-grade
+        chapter into "chapters_with_edges", "chapters_screened_no_edges", and
+        "chapters_excluded_by_screen" (each a list of {"grade", "chapter"} dicts,
+        since chapter names are not unique across grades), plus "prior_grade_count"
+        and "candidate_chapter_count" ({} in the early-return cases below, where no
+        cross-grade analysis ever ran).
+    """
+    emit("agent_started", {
+        "agent":   "PrerequisitesL3",
+        "attempt": 1,
+        "input":   {"level": "L3 (cross-grade, same subject)"},
+    })
+
+    if not subject_prior_grades_l1_complete(board, subject, grade):
+        msg = (f"L3 mapping requires every chapter in every grade earlier than {grade} "
+               f"(same {board}/{subject}) to have L1 prerequisites mapped first — or "
+               "there are no earlier grades to map against yet.")
+        print(f"[orchestrator] {msg}")
+        emit("agent_completed", {"agent": "PrerequisitesL3", "output": {"error": msg, "checkpoint": None}})
+        return "", None, {}, 0.0, {}
+
+    try:
+        target_rows = parse_csv(load_confirmed_csv(board, subject, grade, chapter))
+    except (ValueError, FileNotFoundError) as e:
+        print(f"[orchestrator] L3 prerequisite phase skipped — target CSV unreadable: {e}")
+        emit("agent_completed", {
+            "agent": "PrerequisitesL3",
+            "output": {"error": f"target CSV unreadable: {e}", "checkpoint": None},
+        })
+        return "", None, {}, 0.0, {}
+
+    # Every chapter in every earlier grade of the same subject is a candidate
+    # prerequisite source — same philosophy as L2's sibling scan: don't be clever
+    # about structurally excluding grades, let the chapter_relevance screen (run
+    # once per grade below) and agents/prerequisite_l3's own judgment be the gates.
+    sibling_rows_by_grade_chapter = load_confirmed_csvs_for_subject_prior_grades(board, subject, grade)
+
+    target_concepts = list({r.get("concept", "") for r in target_rows})
+    target_skills   = list({r.get("skill", "")   for r in target_rows})
+    sibling_items_by_grade = {
+        g: {
+            ch: {
+                "concepts": list({r.get("concept", "") for r in rows}),
+                "skills":   list({r.get("skill", "")   for r in rows}),
+            }
+            for ch, rows in chapters.items()
+        }
+        for g, chapters in sibling_rows_by_grade_chapter.items()
+    }
+
+    usage = {}
+    cost = 0.0
+    screen_warnings = []
+    relevant_chapters_by_grade: dict[str, set] = {}
+    for g, sibling_items in sibling_items_by_grade.items():
+        try:
+            screen_result = screen_chapter_relevance(
+                chapter, target_concepts, target_skills, sibling_items, model=model
+            )
+            relevant_chapters_by_grade[g] = set(screen_result.get("relevant_chapters", []))
+            screen_warnings.extend(screen_result.get("warnings", []))
+            usage = add_usage(usage, screen_result.get("usage") or {})
+            cost += screen_result.get("cost_usd", 0.0)
+        except Exception as e:
+            # Defensive: a screening failure for one earlier grade must not blank out
+            # every other grade's candidates — scoped narrower than L2's fallback,
+            # which only ever has one grade to lose in the first place.
+            print(f"[orchestrator] Chapter relevance screen failed for {g} — no candidates from that grade: {e}")
+            relevant_chapters_by_grade[g] = set()
+            screen_warnings.append(f"chapter_relevance screen error for {g}: {e}")
+
+    candidate_pool = {
+        g: {ch: sibling_items_by_grade[g][ch] for ch in relevant if ch in sibling_items_by_grade[g]}
+        for g, relevant in relevant_chapters_by_grade.items()
+    }
+    candidate_pool = {g: chapters for g, chapters in candidate_pool.items() if chapters}
+
+    try:
+        result = run_prerequisite_l3(
+            target_rows, candidate_pool, sibling_rows_by_grade_chapter,
+            board, subject, grade, chapter, model=model,
+        )
+        enriched_rows = result["rows"]
+        warnings      = screen_warnings + result.get("warnings", [])
+        concept_edges = result.get("concept_edges", {})
+        skill_edges   = result.get("skill_edges", {})
+        usage         = add_usage(usage, result.get("usage") or {})
+        cost         += result.get("cost_usd", 0.0)
+    except Exception as e:
+        # Defensive: never let an L3 failure break an already-confirmed chapter.
+        print(f"[orchestrator] L3 prerequisite mapping failed — persisting empty columns: {e}")
+        enriched_rows = [{**r, L3_COLUMNS[0]: [], L3_COLUMNS[1]: []} for r in target_rows]
+        warnings      = screen_warnings + [f"prerequisite_l3 agent error: {e}"]
+        concept_edges = {}
+        skill_edges   = {}
+
+    # Preserve existing L1/L2 columns already present on the target rows — only add L3.
+    final_csv = enriched_csv_to_text(enriched_rows, L1_COLUMNS + L2_COLUMNS + L3_COLUMNS)
+
+    checkpoint = None
+    try:
+        checkpoint = save_confirmed_csv(board, subject, grade, chapter, final_csv)
+        print(f"[orchestrator] Saved confirmed CSV checkpoint (L3): {checkpoint}")
+    except Exception as e:
+        print(f"[orchestrator] Warning: failed to persist confirmed CSV — {e}")
+
+    # Partition every earlier-grade chapter into exactly one bucket, grade-qualified
+    # since chapter names repeat across grades — mirrors L2's 3-way partition with an
+    # added grade dimension.
+    chapters_with_edges_set = {
+        (e["grade"], e["chapter"])
+        for edge_list in list(concept_edges.values()) + list(skill_edges.values())
+        for e in edge_list
+    }
+    all_candidate_pairs = {
+        (g, ch) for g, relevant in relevant_chapters_by_grade.items() for ch in relevant
+    }
+    all_sibling_pairs = {
+        (g, ch) for g, chapters in sibling_items_by_grade.items() for ch in chapters
+    }
+    chapters_with_edges = [{"grade": g, "chapter": ch} for g, ch in sorted(chapters_with_edges_set)]
+    chapters_screened_no_edges = [
+        {"grade": g, "chapter": ch} for g, ch in sorted(all_candidate_pairs - chapters_with_edges_set)
+    ]
+    chapters_excluded_by_screen = [
+        {"grade": g, "chapter": ch} for g, ch in sorted(all_sibling_pairs - all_candidate_pairs)
+    ]
+    chapter_breakdown = {
+        "chapters_with_edges":         chapters_with_edges,
+        "chapters_screened_no_edges":  chapters_screened_no_edges,
+        "chapters_excluded_by_screen": chapters_excluded_by_screen,
+        "prior_grade_count":           len(sibling_items_by_grade),
+    }
+
+    candidate_chapter_count = sum(len(chapters) for chapters in candidate_pool.values())
+
+    emit("agent_completed", {
+        "agent": "PrerequisitesL3",
+        "output": {
+            "concept_edges":      concept_edges,
+            "skill_edges":        skill_edges,
+            "concept_edge_count": sum(len(v) for v in concept_edges.values()),
+            "skill_edge_count":   sum(len(v) for v in skill_edges.values()),
+            "sibling_chapter_count": len(all_sibling_pairs),
+            "candidate_chapter_count": candidate_chapter_count,
+            **chapter_breakdown,
+            "warnings":           warnings,
+            "checkpoint":         checkpoint,
+            "usage":              usage,
+            "cost_usd":           cost,
+            "model":              model,
+        },
+    })
+    return final_csv, checkpoint, usage, cost, chapter_breakdown
+
+
+def run_l3_prerequisite_only(
+    board: str, subject: str, grade: str, chapter: str,
+    emit=None, models: dict | None = None,
+) -> dict:
+    """
+    Run Level-3 (cross-grade) prerequisite mapping for one target chapter.
+
+    Requires the target chapter to already have a confirmed CSV with L1 mapped,
+    AND every chapter in every grade earlier than `grade` (same board+subject) to
+    have L1 mapped (subject_prior_grades_l1_complete) — callers (the API route)
+    should gate on this before invoking, but this function re-checks defensively.
+
+    Returns:
+        {"passed": True, "csv": enriched_csv, "checkpoint": path} on success,
+        {"passed": False, "error": message} if ineligible.
+    """
+    if emit is None:
+        emit = _noop
+
+    if not subject_prior_grades_l1_complete(board, subject, grade):
+        msg = (f"Not every chapter in every grade earlier than {grade} (same "
+               f"{board}/{subject}) has L1 prerequisites mapped yet — or there are "
+               "no earlier grades — L3 mapping is not available.")
+        emit("error", {"message": msg})
+        return {"passed": False, "error": msg}
+
+    _print_header(board, subject, grade, chapter, extra="Mode: L3 prerequisite-only (cross-grade)")
+
+    emit("pipeline_started", {
+        "board": board, "subject": subject,
+        "grade": grade, "chapter": chapter,
+        "human_feedback": None,
+    })
+    emit("attempt_started", {"attempt": 1, "max_attempts": 1})
+
+    final_csv, checkpoint, prereq_usage, prereq_cost, chapter_breakdown = _run_l3_prerequisite_phase(
+        board, subject, grade, chapter, emit=emit,
+        model=_model_for(models, "prerequisite_l3"),
+    )
+
+    if not checkpoint:
+        emit("error", {"message": "L3 prerequisite mapping did not complete — see agent output for details."})
+        return {"passed": False, "error": "L3 prerequisite mapping did not complete."}
+
+    builder = RunRecordBuilder(
+        board, subject, grade, chapter, date.today().isoformat(),
+        mode="l3_prerequisite_only",
+    )
+    builder.add_pipeline_usage(
+        "prerequisite_l3", prereq_usage, prereq_cost, model=_model_for(models, "prerequisite_l3"),
+        extra=chapter_breakdown,
+    )
+    builder.finalize(
+        final_status="passed", failed_check=None,
+        final_csv=final_csv, final_csv_name="confirmed.csv",
+        confirmed_checkpoint=bool(checkpoint),
+        has_prereqs=confirmed_csv_has_l3_prereqs(board, subject, grade, chapter),
+    )
+    record, artifacts = builder.build()
+    _persist_run_record(board, subject, grade, chapter, record, artifacts,
+                        render_report_md(record))
+
+    emit("pipeline_passed", {
+        "attempt":         1,
+        "csv":             final_csv,
+        "source":          "user_provided",
+        "selected_by":     "single",
+        "candidate_count": 1,
+        "judge_rationale": None,
+        "checkpoint":      checkpoint,
+    })
+    print(f"\n[orchestrator] ✓ L3 prerequisite-only run complete")
     return {"passed": True, "csv": final_csv, "checkpoint": checkpoint}
 
 

@@ -2,11 +2,18 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  AgentKey,
   QueueItem,
   RunFormValues,
   RunOutcome,
   StartRunOptions,
 } from "@/lib/types";
+
+interface EnqueueOptions {
+  l2Prerequisite?: boolean;
+  l3Prerequisite?: boolean;
+  models?: Partial<Record<AgentKey, string>>;
+}
 
 interface UseChapterQueueArgs {
   startRun: (options: StartRunOptions) => void;
@@ -26,7 +33,9 @@ function outcomeToStatus(outcome: RunOutcome): QueueItem["status"] {
 }
 
 /**
- * Client-side sequential queue for Generate-from-KB runs.
+ * Client-side sequential queue for chapter runs (Generate-from-KB, or L2/L3
+ * prerequisite mapping — `enqueue`'s `opts.l2Prerequisite`/`opts.l3Prerequisite`
+ * picks which).
  *
  * Drains one chapter at a time by driving `startRun`. Advancement is triggered by
  * `handleRunComplete`, which the owner wires to `usePipeline`'s `onRunComplete` so it
@@ -46,7 +55,7 @@ export function useChapterQueue({ startRun, isRunning }: UseChapterQueueArgs) {
   }, [queue]);
   const processingRef = useRef(false);
 
-  const enqueue = useCallback((v: RunFormValues) => {
+  const enqueue = useCallback((v: RunFormValues, opts?: EnqueueOptions) => {
     setQueue((q) => [
       ...q,
       {
@@ -56,6 +65,9 @@ export function useChapterQueue({ startRun, isRunning }: UseChapterQueueArgs) {
         chapter: v.chapter,
         id: nextId(),
         status: "pending",
+        l2Prerequisite: opts?.l2Prerequisite,
+        l3Prerequisite: opts?.l3Prerequisite,
+        models: opts?.models,
       },
     ]);
   }, []);
@@ -81,6 +93,9 @@ export function useChapterQueue({ startRun, isRunning }: UseChapterQueueArgs) {
         subject: item.subject,
         grade: item.grade,
         chapter: item.chapter,
+        l2Prerequisite: item.l2Prerequisite,
+        l3Prerequisite: item.l3Prerequisite,
+        models: item.models,
       });
     },
     [startRun]

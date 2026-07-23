@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -17,7 +16,14 @@ import { fetchKbBoards, fetchKbSubjects, fetchKbGrades, fetchKbChapters } from "
 import { fetchModels } from "@/lib/models";
 import { AgentModelPicker } from "./model-select";
 import { L2RunForm } from "./l2-run-form";
+import { L3RunForm } from "./l3-run-form";
 import { AGENT_KEYS, type AgentKey, type ModelInfo, type RunFormValues, type StartRunOptions } from "@/lib/types";
+
+export interface EnqueueOptions {
+  l2Prerequisite?: boolean;
+  l3Prerequisite?: boolean;
+  models?: Partial<Record<AgentKey, string>>;
+}
 
 // Keep in sync with orchestrator.py::AGENT_DEFAULT_MODELS.
 const AGENT_DEFAULT_MODELS: Record<AgentKey, string> = {
@@ -28,8 +34,9 @@ const AGENT_DEFAULT_MODELS: Record<AgentKey, string> = {
   rules_doctor: "openai/gpt-5.4-mini",
   revision: "openai/gpt-5.4-mini",
   judge: "openai/gpt-5.4-mini",
-  prerequisite: "openai/gpt-5.4-mini",
-  prerequisite_l2: "openai/gpt-5.4-mini",
+  prerequisite: "anthropic/claude-sonnet-5",
+  prerequisite_l2: "anthropic/claude-sonnet-5",
+  prerequisite_l3: "anthropic/claude-sonnet-5",
 };
 
 interface RunFormProps {
@@ -37,8 +44,11 @@ interface RunFormProps {
   onFormChange: (form: RunFormValues) => void;
   isRunning: boolean;
   onStart: (options: StartRunOptions) => void;
-  // Queue the current chapter for a sequential batch run (generate mode only).
-  onEnqueue?: (values: RunFormValues) => void;
+  // Queue a chapter for the sequential batch queue — generate mode queues the
+  // current form as-is; L2/L3 mode passes opts.l2Prerequisite/l3Prerequisite so
+  // queued items route to cross-chapter/cross-grade mapping instead of the full
+  // pipeline.
+  onEnqueue?: (values: RunFormValues, opts?: EnqueueOptions) => void;
 }
 
 export type LoadState = "idle" | "loading" | "done";
@@ -101,8 +111,10 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
   const [chapterState, setChapterState] = useState<LoadState>("idle");
 
   // "generate" = full pipeline from the KB; "csv" = skip Stage 1, paste/upload a CSV;
-  // "l2" = cross-chapter prerequisite mapping for a chapter with L1 already mapped.
-  const [mode, setMode] = useState<"generate" | "csv" | "l2">("generate");
+  // "l2" = cross-chapter prerequisite mapping for a chapter with L1 already mapped;
+  // "l3" = cross-grade prerequisite mapping for a chapter with L1 already mapped
+  // (in its own grade and every earlier grade of the subject).
+  const [mode, setMode] = useState<"generate" | "csv" | "l2" | "l3">("generate");
   const [csvText, setCsvText] = useState("");
 
   // Per-agent model overrides (advanced, collapsed by default). Omitted keys fall
@@ -241,27 +253,26 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
         New Run
       </div>
 
-      {/* Mode toggle: generate from KB vs. provide a ready-made curriculum CSV */}
-      <div className="flex rounded-lg border border-border bg-secondary/40 p-0.5">
-        {([
-          ["generate", "Generate from KB"],
-          ["csv", "Provide CSV"],
-          ["l2", "L2 Prerequisites"],
-        ] as const).map(([value, label]) => (
-          <button
-            key={value}
-            onClick={() => setMode(value)}
-            disabled={isRunning}
-            className={cn(
-              "flex-1 rounded-md px-2 py-1 text-[10px] font-bold uppercase tracking-wide transition-colors disabled:opacity-50",
-              mode === value
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            {label}
-          </button>
-        ))}
+      {/* Mode select: generate from KB, or run one prerequisite level (L1 CSV / L2 / L3) */}
+      <div className="space-y-1.5">
+        <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          Run Mode
+        </Label>
+        <Select
+          value={mode}
+          onValueChange={(v) => v && setMode(v as typeof mode)}
+          disabled={isRunning}
+        >
+          <SelectTrigger className="h-8 w-full bg-secondary text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="generate">Generate from KB</SelectItem>
+            <SelectItem value="csv">L1 Prerequisites (CSV)</SelectItem>
+            <SelectItem value="l2">L2 Prerequisites</SelectItem>
+            <SelectItem value="l3">L3 Prerequisites</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       {mode === "generate" ? (
@@ -363,12 +374,23 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
             ▶ Run Prerequisite Mapping
           </Button>
         </>
-      ) : (
+      ) : mode === "l2" ? (
         <L2RunForm
           form={form}
           onFormChange={onFormChange}
           isRunning={isRunning}
           onStart={onStart}
+          onEnqueue={onEnqueue}
+          modelsSection={modelsSection}
+          modelsForStart={modelsForStart}
+        />
+      ) : (
+        <L3RunForm
+          form={form}
+          onFormChange={onFormChange}
+          isRunning={isRunning}
+          onStart={onStart}
+          onEnqueue={onEnqueue}
           modelsSection={modelsSection}
           modelsForStart={modelsForStart}
         />

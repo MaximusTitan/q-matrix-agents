@@ -73,9 +73,9 @@ def _ordered_unique(items):
 
 def _extract_edges(parsed: dict, key: str, target_field: str, valid: set) -> dict:
     """
-    Turn the LLM's [{<target_field>: T, "prerequisites": [P, ...]}, ...] into
-    {T: [P, ...]} keeping only T and P that exist in `valid`. Drops self-edges.
-    Returns (edges, warnings).
+    Turn the LLM's [{<target_field>: T, "prerequisites": [{"item": P, "reason": R}, ...]}, ...]
+    into {T: [{"item": P, "reason": R}, ...]} keeping only T and P that exist in `valid`.
+    Drops self-edges. Returns (edges, warnings).
     """
     edges = {}
     warnings = []
@@ -89,17 +89,26 @@ def _extract_edges(parsed: dict, key: str, target_field: str, valid: set) -> dic
                 warnings.append(f"{target_field} not in CSV (dropped): {target!r}")
             continue
         kept = []
+        seen_items = set()
         for p in prereqs:
-            if p == target:
-                continue  # self-edge
-            if p not in valid:
-                warnings.append(f"prerequisite {target_field} not in CSV (dropped): {p!r}")
+            if not isinstance(p, dict):
+                warnings.append(f"prerequisite for {target!r} was not an object (dropped): {p!r}")
                 continue
-            kept.append(p)
+            item = p.get("item")
+            reason = p.get("reason", "")
+            if item == target:
+                continue  # self-edge
+            if item not in valid:
+                warnings.append(f"prerequisite {target_field} not in CSV (dropped): {item!r}")
+                continue
+            if item in seen_items:
+                continue
+            seen_items.add(item)
+            kept.append({"item": item, "reason": reason})
         if kept:
             edges.setdefault(target, [])
             edges[target].extend(kept)
-    return {t: _ordered_unique(ps) for t, ps in edges.items()}, warnings
+    return edges, warnings
 
 
 def run(
@@ -120,8 +129,8 @@ def run(
     Returns:
         {
           "rows": <rows with L1_CONCEPT_COL / L1_SKILL_COL added (list-valued)>,
-          "concept_edges": {target_concept: [prereq_concept, ...]},
-          "skill_edges":   {target_skill:   [prereq_skill, ...]},
+          "concept_edges": {target_concept: [{"item": prereq_concept, "reason": str}, ...]},
+          "skill_edges":   {target_skill:   [{"item": prereq_skill,   "reason": str}, ...]},
           "warnings": [str, ...],
         }
 
@@ -180,13 +189,19 @@ chapter: {chapter}
 
         for target_skill, prereq_skills in skill_edges.items():
             for tc in skill_to_concepts.get(target_skill, []):
-                for prereq_skill in prereq_skills:
+                existing_items = {e["item"] for e in concept_edges.get(tc, [])}
+                for prereq in prereq_skills:
+                    prereq_skill = prereq["item"]
                     for pc in skill_to_concepts.get(prereq_skill, []):
-                        if pc == tc:
-                            continue  # same concept — no concept-level edge
+                        if pc == tc or pc in existing_items:
+                            continue  # same concept, or already recorded
                         concept_edges.setdefault(tc, [])
-                        if pc not in concept_edges[tc]:
-                            concept_edges[tc].append(pc)
+                        concept_edges[tc].append({
+                            "item": pc,
+                            "reason": f"Derived from skill prerequisite: '{prereq_skill}' "
+                                      f"is a prerequisite of a skill under this concept.",
+                        })
+                        existing_items.add(pc)
 
     # ── Enrich rows ─────────────────────────────────────────────────────────────
     enriched = []

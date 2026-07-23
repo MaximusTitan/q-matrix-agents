@@ -65,7 +65,19 @@ export function QueuePanel({
             >
               <span className="mt-0.5 text-xs">{statusIcon(item.status)}</span>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-xs font-medium">{item.chapter}</div>
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-xs font-medium">{item.chapter}</span>
+                  {item.l2Prerequisite && (
+                    <span className="shrink-0 rounded bg-secondary px-1 py-0.5 text-[9px] font-bold text-muted-foreground">
+                      L2
+                    </span>
+                  )}
+                  {item.l3Prerequisite && (
+                    <span className="shrink-0 rounded bg-secondary px-1 py-0.5 text-[9px] font-bold text-muted-foreground">
+                      L3
+                    </span>
+                  )}
+                </div>
                 <div className="truncate text-[10px] text-muted-foreground">
                   {item.subject} · {item.grade}
                 </div>

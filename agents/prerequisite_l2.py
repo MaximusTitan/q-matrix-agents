@@ -16,9 +16,9 @@ enriches every target row with two columns:
     prereq_concepts_L2_cross_chapter — cross-chapter concepts prerequisite to the row's concept
     prereq_skills_L2_cross_chapter   — cross-chapter skills   prerequisite to the row's skill
 
-Each cell is a Python list of {"chapter": ..., "concept"|"skill": ...} dicts (a bare string
-isn't chapter-unique the way it is for L1) — JSON-encoded at serialization time by
-skills.csv_utils.enriched_csv_to_text, same as L1.
+Each cell is a Python list of {"chapter": ..., "concept"|"skill": ..., "reason": ...} dicts
+(a bare string isn't chapter-unique the way it is for L1) — JSON-encoded at serialization
+time by skills.csv_utils.enriched_csv_to_text, same as L1.
 
 Direction: an item in a row's prereq column is a prerequisite OF that row's concept/skill,
 never the reverse. Edges are recorded only on the target (downstream) chapter's CSV — sibling
@@ -87,8 +87,8 @@ def _extract_cross_chapter_edges(
 ) -> tuple[dict, list]:
     """
     Turn the LLM's
-        [{<target_field>: T, "prerequisites": [{"chapter": C, <target_field>: P}, ...]}, ...]
-    into {T: [{"chapter": C, target_field: P}, ...]}, keeping only T present in
+        [{<target_field>: T, "prerequisites": [{"chapter": C, <target_field>: P, "reason": R}, ...]}, ...]
+    into {T: [{"chapter": C, target_field: P, "reason": R}, ...]}, keeping only T present in
     `target_valid` (the target chapter's own items) and (C, P) pairs present in
     `pool_valid` (the screened candidate pool). Drops anything else, with a warning.
     """
@@ -111,6 +111,7 @@ def _extract_cross_chapter_edges(
                 continue
             p_chapter = p.get("chapter")
             p_item = p.get(target_field)
+            p_reason = p.get("reason", "")
             if _edge_key(p_chapter, p_item) not in pool_valid:
                 warnings.append(
                     f"prerequisite {target_field} not in candidate pool (dropped): "
@@ -121,7 +122,7 @@ def _extract_cross_chapter_edges(
             if k in seen_keys:
                 continue
             seen_keys.add(k)
-            kept.append({"chapter": p_chapter, target_field: p_item})
+            kept.append({"chapter": p_chapter, target_field: p_item, "reason": p_reason})
         if kept:
             edges.setdefault(target, [])
             edges[target].extend(kept)
@@ -156,8 +157,8 @@ def run(
     Returns:
         {
           "rows": <target_rows with L2_CONCEPT_COL / L2_SKILL_COL added (list-valued)>,
-          "concept_edges": {target_concept: [{"chapter", "concept"}, ...]},
-          "skill_edges":   {target_skill:   [{"chapter", "skill"},   ...]},
+          "concept_edges": {target_concept: [{"chapter", "concept", "reason"}, ...]},
+          "skill_edges":   {target_skill:   [{"chapter", "skill", "reason"},   ...]},
           "warnings": [str, ...],
           "usage": {...}, "cost_usd": float,
         }
@@ -267,14 +268,25 @@ target chapter: {chapter}
 
         for target_skill, prereqs in skill_edges.items():
             for tc in target_skill_to_concepts.get(target_skill, []):
+                existing_keys = {
+                    (e["chapter"], e["concept"]) for e in concept_edges.get(tc, [])
+                }
                 for prereq in prereqs:
                     prereq_chapter = prereq["chapter"]
                     prereq_skill = prereq["skill"]
                     for pc in sibling_skill_to_concepts.get(prereq_chapter, {}).get(prereq_skill, []):
+                        key = (prereq_chapter, pc)
+                        if key in existing_keys:
+                            continue
                         concept_edges.setdefault(tc, [])
-                        new_edge = {"chapter": prereq_chapter, "concept": pc}
-                        if new_edge not in concept_edges[tc]:
-                            concept_edges[tc].append(new_edge)
+                        concept_edges[tc].append({
+                            "chapter": prereq_chapter,
+                            "concept": pc,
+                            "reason": f"Derived from skill prerequisite: '{prereq_skill}' "
+                                      f"(in {prereq_chapter}) is a prerequisite of a skill "
+                                      f"under this concept.",
+                        })
+                        existing_keys.add(key)
 
     # ── Enrich target rows ───────────────────────────────────────────────────
     enriched = []

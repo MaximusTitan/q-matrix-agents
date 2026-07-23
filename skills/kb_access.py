@@ -870,17 +870,89 @@ def confirmed_csv_has_l2_prereqs(board: str, subject: str, grade: str, chapter: 
     return False
 
 
+def confirmed_csv_l2_attempted(board: str, subject: str, grade: str, chapter: str) -> bool:
+    """
+    True if this chapter's confirmed CSV header includes the L2 prerequisite columns
+    at all — i.e. an L2 run has completed for the chapter's current data — regardless
+    of whether it found any genuine cross-chapter prerequisite. Distinguishes "L2 ran,
+    found nothing" from "L2 was never run": both look identical to
+    confirmed_csv_has_l2_prereqs, which only checks cell content, not column presence.
+    enriched_csv_to_text writes the header as exactly base+extra columns, so an L1-only
+    write never includes the L2 columns and an L2 write always does.
+    """
+    from agents.prerequisite_l2 import L2_COLUMNS
+
+    if not confirmed_csv_exists(board, subject, grade, chapter):
+        return False
+    try:
+        rows = parse_csv(load_confirmed_csv(board, subject, grade, chapter))
+    except (ValueError, FileNotFoundError):
+        return False
+    if not rows:
+        return False
+    return any(col in rows[0] for col in L2_COLUMNS)
+
+
+def confirmed_csv_has_l3_prereqs(board: str, subject: str, grade: str, chapter: str) -> bool:
+    """
+    L3 analogue of confirmed_csv_has_prereqs — True if any Level-3 (cross-grade,
+    same subject) prerequisite cell on this chapter's confirmed CSV holds a
+    non-empty JSON value.
+    """
+    from agents.prerequisite_l3 import L3_COLUMNS
+
+    if not confirmed_csv_exists(board, subject, grade, chapter):
+        return False
+    try:
+        rows = parse_csv(load_confirmed_csv(board, subject, grade, chapter))
+    except (ValueError, FileNotFoundError):
+        return False
+
+    for row in rows:
+        for col in L3_COLUMNS:
+            raw = (row.get(col) or "").strip()
+            if not raw or raw == "[]":
+                continue
+            try:
+                if json.loads(raw):
+                    return True
+            except (json.JSONDecodeError, TypeError):
+                return True
+    return False
+
+
+def confirmed_csv_l3_attempted(board: str, subject: str, grade: str, chapter: str) -> bool:
+    """
+    True if this chapter's confirmed CSV header includes the L3 prerequisite columns
+    at all — i.e. an L3 run has completed for the chapter's current data — regardless
+    of whether it found any genuine cross-grade prerequisite. Mirrors
+    confirmed_csv_l2_attempted's "ran but found nothing" vs "never ran" distinction.
+    """
+    from agents.prerequisite_l3 import L3_COLUMNS
+
+    if not confirmed_csv_exists(board, subject, grade, chapter):
+        return False
+    try:
+        rows = parse_csv(load_confirmed_csv(board, subject, grade, chapter))
+    except (ValueError, FileNotFoundError):
+        return False
+    if not rows:
+        return False
+    return any(col in rows[0] for col in L3_COLUMNS)
+
+
 def list_chapters_in_grade_subject(board: str, subject: str, grade: str) -> list[dict]:
     """
     Chapters under textbooks/{board}/{subject}/{grade}/, filtered from
-    list_textbook_chapters() rather than re-walking the filesystem, with two
-    added flags for L2 eligibility:
+    list_textbook_chapters() rather than re-walking the filesystem, with three
+    added flags for L2/L3 eligibility:
         has_l1_prereqs  — confirmed_csv_has_prereqs(...)
         has_l2_prereqs  — confirmed_csv_has_l2_prereqs(...)
+        has_l3_prereqs  — confirmed_csv_has_l3_prereqs(...)
 
     Returns:
         One dict per chapter: {"board", "subject", "grade", "chapter",
-        "has_csm", "has_confirmed", "has_l1_prereqs", "has_l2_prereqs"}.
+        "has_csm", "has_confirmed", "has_l1_prereqs", "has_l2_prereqs", "has_l3_prereqs"}.
     """
     chapters = [
         c for c in list_textbook_chapters()
@@ -889,6 +961,7 @@ def list_chapters_in_grade_subject(board: str, subject: str, grade: str) -> list
     for c in chapters:
         c["has_l1_prereqs"] = confirmed_csv_has_prereqs(board, subject, grade, c["chapter"])
         c["has_l2_prereqs"] = confirmed_csv_has_l2_prereqs(board, subject, grade, c["chapter"])
+        c["has_l3_prereqs"] = confirmed_csv_has_l3_prereqs(board, subject, grade, c["chapter"])
     return chapters
 
 
@@ -926,3 +999,72 @@ def load_confirmed_csvs_for_grade_subject(
         except (ValueError, FileNotFoundError):
             continue
     return result
+
+
+def _grade_sort_key(grade: str) -> tuple[int, str]:
+    """
+    Order grade folder names (e.g. "Grade8", "Grade10") numerically by their
+    trailing integer rather than lexically ("Grade10" < "Grade9" as strings).
+
+    Grades with no trailing digits sort first (key (-1, grade)) rather than
+    raising — this is a deliberate fail-toward-"treat as earliest/unknown"
+    choice: silently treating an unparseable grade as LATER than everything
+    else would make it invisible to L3's "earlier grades" scan and quietly
+    drop real prerequisite candidates. Callers that need to know about this
+    should check for non-numeric grade names explicitly.
+    """
+    m = re.search(r"(\d+)$", grade)
+    return (int(m.group(1)), grade) if m else (-1, grade)
+
+
+def list_grades_in_board_subject(board: str, subject: str) -> list[str]:
+    """
+    Every distinct grade under textbooks/{board}/{subject}/, ordered by
+    _grade_sort_key (numeric order by trailing digits, not lexical).
+    """
+    grades = {
+        c["grade"] for c in list_textbook_chapters()
+        if c["board"] == board and c["subject"] == subject
+    }
+    return sorted(grades, key=_grade_sort_key)
+
+
+def earlier_grades(board: str, subject: str, grade: str) -> list[str]:
+    """
+    Grades in this board/subject that come strictly before `grade`, in
+    _grade_sort_key order (nearest-first is NOT guaranteed or required —
+    L3 treats every earlier grade as an equally valid candidate source).
+    """
+    target_key = _grade_sort_key(grade)
+    return [
+        g for g in list_grades_in_board_subject(board, subject)
+        if _grade_sort_key(g) < target_key
+    ]
+
+
+def subject_prior_grades_l1_complete(board: str, subject: str, grade: str) -> bool:
+    """
+    True iff every chapter in every grade earlier than `grade` (same board+subject)
+    has L1 prerequisites mapped. False if there are no earlier grades at all — an
+    empty candidate pool is never mistaken for "ready", mirroring
+    grade_subject_l1_complete's same rule for L2.
+    """
+    priors = earlier_grades(board, subject, grade)
+    if not priors:
+        return False
+    return all(grade_subject_l1_complete(board, subject, g) for g in priors)
+
+
+def load_confirmed_csvs_for_subject_prior_grades(
+    board: str, subject: str, grade: str
+) -> dict[str, dict[str, list[dict]]]:
+    """
+    Batch-load every chapter's confirmed CSV across every grade earlier than
+    `grade` (same board+subject), keyed by grade then chapter name. No
+    exclude_chapter is needed — the L3 target chapter lives in a later grade,
+    so it can never collide with an earlier grade's chapters.
+    """
+    return {
+        g: load_confirmed_csvs_for_grade_subject(board, subject, g)
+        for g in earlier_grades(board, subject, grade)
+    }

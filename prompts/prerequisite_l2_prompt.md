@@ -86,6 +86,10 @@ You do NOT need to map concept prerequisites that are merely implied by skill pr
 those are derived automatically downstream. Only assert a concept-level prerequisite when the
 concepts themselves have a direct learning dependency.
 
+For every prerequisite you assert, give a one-sentence `reason` explaining the specific
+learning dependency — what about the target actually requires the prerequisite item, not a
+restatement of the two item names or a generic "both are related" claim.
+
 ---
 
 ## Output
@@ -96,11 +100,11 @@ Respond with STRICT JSON only — no prose, no markdown fences:
 {
   "concept_prerequisites": [
     { "concept": "<target concept, verbatim>",
-      "prerequisites": [{ "chapter": "<source chapter, verbatim>", "concept": "<prerequisite concept, verbatim>" }] }
+      "prerequisites": [{ "chapter": "<source chapter, verbatim>", "concept": "<prerequisite concept, verbatim>", "reason": "<one-sentence learning dependency>" }] }
   ],
   "skill_prerequisites": [
     { "skill": "<target skill, verbatim>",
-      "prerequisites": [{ "chapter": "<source chapter, verbatim>", "skill": "<prerequisite skill, verbatim>" }] }
+      "prerequisites": [{ "chapter": "<source chapter, verbatim>", "skill": "<prerequisite skill, verbatim>", "reason": "<one-sentence learning dependency>" }] }
   ]
 }
 ```
@@ -110,5 +114,7 @@ Rules for the JSON:
 - Every target `concept`/`skill` string MUST match the target chapter's list verbatim.
 - Every prerequisite `chapter` + `concept`/`skill` pair MUST match an entry in the candidate pool
   verbatim (including the chapter it was tagged with).
+- Every `reason` must be a specific, one-sentence explanation — not a restatement of the item
+  names and not a generic "same broad subject" claim.
 - If there are no genuine cross-chapter prerequisites at all, return
   `{"concept_prerequisites": [], "skill_prerequisites": []}`.

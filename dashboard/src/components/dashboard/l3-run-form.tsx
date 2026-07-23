@@ -9,16 +9,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { fetchKbBoards, fetchKbSubjects, fetchKbGrades, fetchL2EligibleChapters } from "@/lib/api";
+import { fetchKbBoards, fetchKbSubjects, fetchKbGrades, fetchL3EligibleChapters } from "@/lib/api";
 import { KbSelect, type EnqueueOptions, type LoadState } from "./run-form";
 import type {
   AgentKey,
-  L2EligibleChaptersResponse,
+  L3EligibleChaptersResponse,
   RunFormValues,
   StartRunOptions,
 } from "@/lib/types";
 
-interface L2RunFormProps {
+interface L3RunFormProps {
   form: RunFormValues;
   onFormChange: (form: RunFormValues) => void;
   isRunning: boolean;
@@ -28,7 +28,7 @@ interface L2RunFormProps {
   modelsForStart: Partial<Record<AgentKey, string>> | undefined;
 }
 
-export function L2RunForm({
+export function L3RunForm({
   form,
   onFormChange,
   isRunning,
@@ -36,7 +36,7 @@ export function L2RunForm({
   onEnqueue,
   modelsSection,
   modelsForStart,
-}: L2RunFormProps) {
+}: L3RunFormProps) {
   const [boards, setBoards] = useState<string[]>([]);
   const [subjects, setSubjects] = useState<string[]>([]);
   const [grades, setGrades] = useState<string[]>([]);
@@ -45,10 +45,10 @@ export function L2RunForm({
   const [subjectState, setSubjectState] = useState<LoadState>("idle");
   const [gradeState, setGradeState] = useState<LoadState>("idle");
 
-  const [eligibility, setEligibility] = useState<L2EligibleChaptersResponse | null>(null);
+  const [eligibility, setEligibility] = useState<L3EligibleChaptersResponse | null>(null);
   const [eligibilityLoading, setEligibilityLoading] = useState(false);
 
-  // Which target chapters are selected for L2 mapping. Local to this form (not
+  // Which target chapters are selected for L3 mapping. Local to this form (not
   // part of the shared `form`, which only carries a single `chapter` string
   // used by the other run modes too).
   const [selectedChapters, setSelectedChapters] = useState<string[]>([]);
@@ -61,7 +61,7 @@ export function L2RunForm({
     });
   }, []);
 
-  // Whenever board/subject/grade are all set, (re)fetch L2 eligibility for that group.
+  // Whenever board/subject/grade are all set, (re)fetch L3 eligibility for that group.
   useEffect(() => {
     setSelectedChapters([]);
     if (!form.board || !form.subject || !form.grade) {
@@ -69,7 +69,7 @@ export function L2RunForm({
       return;
     }
     setEligibilityLoading(true);
-    fetchL2EligibleChapters(form.board, form.subject, form.grade)
+    fetchL3EligibleChapters(form.board, form.subject, form.grade)
       .then(setEligibility)
       .catch(() => setEligibility(null))
       .finally(() => setEligibilityLoading(false));
@@ -108,9 +108,9 @@ export function L2RunForm({
   return (
     <>
       <p className="text-[10px] leading-relaxed text-muted-foreground">
-        Maps a chapter&apos;s concepts/skills against concepts/skills from other chapters in the
-        same grade + subject. Only available once every chapter in the grade + subject has L1
-        (within-chapter) prerequisites mapped.
+        Maps a chapter&apos;s concepts/skills against concepts/skills from chapters in earlier
+        grades of the same subject. Only available once the target chapter&apos;s own grade + subject,
+        and every earlier grade of the subject, have L1 (within-chapter) prerequisites mapped.
       </p>
 
       <KbSelect
@@ -147,18 +147,34 @@ export function L2RunForm({
         <p className="text-[10px] text-muted-foreground">Checking L1 eligibility…</p>
       )}
 
-      {form.grade && !eligibilityLoading && eligibility && !eligibility.eligible && (
+      {form.grade && !eligibilityLoading && eligibility && eligibility.prior_grade_count === 0 && (
         <div className="space-y-1 rounded-md border border-border bg-secondary/40 p-2">
           <p className="text-[10px] font-bold text-foreground">
-            L2 mapping unavailable for this grade + subject
+            L3 mapping unavailable for this grade
           </p>
           <p className="text-[10px] leading-relaxed text-muted-foreground">
-            {eligibility.blocking_chapters.length > 0
-              ? `${eligibility.blocking_chapters.length} chapter(s) still need L1 mapping: ${eligibility.blocking_chapters.join(", ")}`
-              : "No chapters found in this grade + subject."}
+            No earlier grades exist yet for this board + subject — there is nothing to map
+            cross-grade prerequisites against.
           </p>
         </div>
       )}
+
+      {form.grade &&
+        !eligibilityLoading &&
+        eligibility &&
+        eligibility.prior_grade_count > 0 &&
+        !eligibility.eligible && (
+          <div className="space-y-1 rounded-md border border-border bg-secondary/40 p-2">
+            <p className="text-[10px] font-bold text-foreground">
+              L3 mapping unavailable for this grade + subject
+            </p>
+            <p className="text-[10px] leading-relaxed text-muted-foreground">
+              {eligibility.blocking_chapters.length > 0
+                ? `${eligibility.blocking_chapters.length} chapter(s) in this grade still need L1 mapping: ${eligibility.blocking_chapters.join(", ")}`
+                : `Every chapter in ${eligibility.prior_grade_count} earlier grade(s) needs L1 mapping first.`}
+            </p>
+          </div>
+        )}
 
       {form.grade && !eligibilityLoading && eligibility?.eligible && (
         <div className="space-y-1.5">
@@ -184,7 +200,7 @@ export function L2RunForm({
               {eligibility.chapters.map((c) => (
                 <SelectItem key={c.chapter} value={c.chapter}>
                   {c.chapter}
-                  {c.has_l2_prereqs ? " (L2 already mapped — re-run?)" : ""}
+                  {c.has_l3_prereqs ? " (L3 already mapped — re-run?)" : ""}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -226,7 +242,7 @@ export function L2RunForm({
               : undefined
           }
           onClick={() =>
-            onStart({ ...form, chapter: selectedChapters[0], l2Prerequisite: true, models: modelsForStart })
+            onStart({ ...form, chapter: selectedChapters[0], l3Prerequisite: true, models: modelsForStart })
           }
         >
           ▶ Run Now
@@ -239,7 +255,7 @@ export function L2RunForm({
             title="Add the selected chapter(s) to the queue"
             onClick={() => {
               selectedChapters.forEach((chapter) =>
-                onEnqueue({ ...form, chapter }, { l2Prerequisite: true, models: modelsForStart })
+                onEnqueue({ ...form, chapter }, { l3Prerequisite: true, models: modelsForStart })
               );
               setSelectedChapters([]);
             }}

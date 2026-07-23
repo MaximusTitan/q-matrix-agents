@@ -207,9 +207,10 @@ def compute_model_performance(records: list[dict]) -> dict:
                 usage=judge.get("usage") or {}, date=date, rows=None,
             )
 
-        # ── Map Extraction / Prerequisite (pipeline-level, not per-attempt) ─
+        # ── Map Extraction / Prerequisite L1 / Prerequisite L2 / Prerequisite L3
+        #    (pipeline-level, not per-attempt) ──────────────────────────────
         pipeline_agents = rec.get("pipeline_agents") or {}
-        for agent_key in ("map_extraction", "prerequisite"):
+        for agent_key in ("map_extraction", "prerequisite", "prerequisite_l2", "prerequisite_l3"):
             entry = pipeline_agents.get(agent_key)
             if entry and entry.get("model"):
                 bucket(agent_key, entry["model"]).add_run(

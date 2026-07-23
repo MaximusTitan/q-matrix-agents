@@ -3,6 +3,7 @@ import { AgentTimeline } from "@/components/dashboard/agent-timeline";
 import { CsvPreview } from "@/components/dashboard/csv-preview";
 import { ComparePanel, collectCsvSources } from "@/components/dashboard/compare-panel";
 import { EscalationPanel } from "@/components/dashboard/escalation-panel";
+import { PrerequisiteMappingSummary } from "@/components/dashboard/prerequisite-mapping-summary";
 import { cn } from "@/lib/utils";
 import type { PipelineState, RunFormValues, StartRunOptions } from "@/lib/types";
 
@@ -74,6 +75,13 @@ export function MainPanel({ state, form, onStart }: MainPanelProps) {
       ) : (
         <>
           <AgentTimeline agents={state.agents} currentAttempt={state.currentAttempt} />
+          <PrerequisiteMappingSummary
+            agent={[...state.agents]
+              .reverse()
+              .find((a) =>
+                a.name === "Prerequisites" || a.name === "PrerequisitesL2" || a.name === "PrerequisitesL3"
+              )}
+          />
           {state.csv && (
             <CsvPreview
               csv={state.csv}

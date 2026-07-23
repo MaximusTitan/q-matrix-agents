@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Copy, Download, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Copy, Download, X } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { copyCsv, downloadCsv } from "@/lib/csv-actions";
 import { fetchRunCsv, type AnalyticsFilters } from "@/lib/api";
+import { AGENT_LABELS } from "@/lib/models";
 import { doctorStepsFromRecord } from "@/lib/doctor-trail";
 import { sumUsage } from "@/lib/usage";
 import { cn } from "@/lib/utils";
@@ -25,6 +26,7 @@ import { DoctorTrail } from "./shared/doctor-trail";
 import { ModelPerformancePanel } from "./model-performance-panel";
 import { AnalyticsFilterBar, type AnalyticsFolderOptions } from "./analytics-filter-bar";
 import { UsageBadge } from "./shared/usage-badge";
+import { ChapterBreakdown } from "./shared/chapter-breakdown";
 
 export interface SelectedChapter {
   board: string;
@@ -104,24 +106,83 @@ function StatTile({
   );
 }
 
+// Wider tile than StatTile — breaks confirmed chapters down by prerequisite
+// depth instead of one bare count, since "confirmed" alone doesn't say how far
+// prerequisite mapping actually got. L1 and L2 are NOT mutually exclusive —
+// every L2-mapped chapter is necessarily also L1-mapped (L2 mapping requires
+// L1 to be complete first), so L1 here is the full L1 count and L2 is the
+// subset of it that also has L2 mapped, not a disjoint "L1-but-not-L2" bucket.
+// L3 is NOT necessarily a subset of L2, though — L3's own gate only requires
+// L1 (own grade + every earlier grade), not L2 — so a chapter can have L3
+// mapped without L2 ever having run.
+function PrereqDepthTile({
+  noPrereqs,
+  l1,
+  l2,
+  l3,
+}: {
+  noPrereqs: number;
+  l1: number;
+  l2: number;
+  l3: number;
+}) {
+  return (
+    <div className="flex min-w-[320px] flex-[2] flex-col gap-2 rounded-lg border border-border bg-card px-4 py-3">
+      <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+        Confirmed · prerequisite depth
+      </span>
+      <div className="flex gap-6">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-xl font-bold tabular-nums" style={{ color: "var(--qm-blue)" }}>
+            {noPrereqs}
+          </span>
+          <span className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+            No prereqs
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-xl font-bold tabular-nums">{l1}</span>
+          <span className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+            L1
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-xl font-bold tabular-nums" style={{ color: "var(--qm-purple)" }}>
+            {l2}
+          </span>
+          <span className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+            L2
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-xl font-bold tabular-nums" style={{ color: "var(--qm-amber)" }}>
+            {l3}
+          </span>
+          <span className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+            L3
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SummaryRow({ data }: { data: AnalyticsResponse }) {
   const s = data.summary;
   const attempted = s.total_chapters;
-  const succeeded = s.confirmed + s.confirmed_no_prereqs;
-  const rate = attempted ? Math.round((succeeded / attempted) * 100) : 0;
+  const confirmedTotal = s.confirmed + s.confirmed_no_prereqs;
+  const rate = attempted ? Math.round((confirmedTotal / attempted) * 100) : 0;
   return (
     <div className="flex flex-wrap gap-3">
       <StatTile label="Chapters attempted" value={s.total_chapters} />
-      <StatTile label="Confirmed · L1 mapped" value={s.confirmed} color="var(--qm-green)" />
-      {s.confirmed_no_prereqs > 0 && (
-        <StatTile
-          label="Confirmed · no prereqs"
-          value={s.confirmed_no_prereqs}
-          color="var(--qm-blue)"
-        />
-      )}
+      <StatTile label="Confirmed" value={confirmedTotal} color="var(--qm-green)" />
+      <PrereqDepthTile
+        noPrereqs={s.confirmed_no_prereqs}
+        l1={s.confirmed}
+        l2={s.confirmed_l2_prereqs}
+        l3={s.confirmed_l3_prereqs}
+      />
       <StatTile label="Escalated" value={s.escalated} color="var(--qm-red)" />
-      <StatTile label="Mapped only" value={s.mapped_only} color="var(--qm-amber)" />
       <StatTile label="Success rate %" value={rate} color="var(--qm-purple)" />
     </div>
   );
@@ -154,6 +215,43 @@ function ChapterRow({
       <span className="min-w-0 flex-1 truncate text-xs font-medium">
         {chapter.chapter}
       </span>
+      {chapter.status === "confirmed" &&
+        (chapter.has_prereqs || chapter.has_l2_prereqs || chapter.has_l3_prereqs) && (
+          <span
+            className="shrink-0 rounded bg-secondary px-1 py-0.5 text-[9px] font-bold text-muted-foreground"
+            title={
+              chapter.has_l3_prereqs
+                ? "Cross-grade (L3) prerequisites mapped"
+                : chapter.has_l2_prereqs
+                  ? "Cross-chapter (L2) prerequisites mapped"
+                  : "Within-chapter (L1) prerequisites mapped"
+            }
+          >
+            {chapter.has_l3_prereqs ? "L3" : chapter.has_l2_prereqs ? "L2" : "L1"}
+          </span>
+        )}
+      {chapter.status === "confirmed" &&
+        chapter.has_prereqs &&
+        !chapter.has_l3_prereqs &&
+        chapter.l3_attempted && (
+          <span
+            className="shrink-0 rounded bg-secondary/50 px-1 py-0.5 text-[9px] font-bold text-muted-foreground/70"
+            title="L3 (cross-grade) mapping ran for this chapter but found no genuine prerequisites."
+          >
+            no L3
+          </span>
+        )}
+      {chapter.status === "confirmed" &&
+        chapter.has_prereqs &&
+        !chapter.has_l2_prereqs &&
+        chapter.l2_attempted && (
+          <span
+            className="shrink-0 rounded bg-secondary/50 px-1 py-0.5 text-[9px] font-bold text-muted-foreground/70"
+            title="L2 (cross-chapter) mapping ran for this chapter but found no genuine prerequisites."
+          >
+            no L2
+          </span>
+        )}
       {chapter.status === "confirmed" && !chapter.has_prereqs && (
         <span className="shrink-0 text-[10px] text-[var(--qm-blue)]">no prereqs</span>
       )}
@@ -479,22 +577,57 @@ const L1_COLUMNS = [
   "prereq_skills_L1_same_chapter",
 ];
 
+const L2_COLUMNS = [
+  "prereq_concepts_L2_cross_chapter",
+  "prereq_skills_L2_cross_chapter",
+];
+
+const L3_COLUMNS = [
+  "prereq_concepts_L3_prior_grade",
+  "prereq_skills_L3_prior_grade",
+];
+
+// A prereq cell entry may be (oldest → newest): a bare string (pre-reasoning
+// L1), a {chapter, concept|skill} pair (pre-reasoning L2), a
+// {item|concept|skill, reason?, chapter?} object (L1/L2), or a
+// {grade, chapter, concept|skill, reason?} object (L3). Normalize to a label +
+// optional tooltip so the chip renderer doesn't care which era or level wrote it.
+function prereqEntryLabel(entry: unknown): { label: string; reason?: string } {
+  if (typeof entry === "string") return { label: entry };
+  if (entry && typeof entry === "object") {
+    const e = entry as Record<string, unknown>;
+    const base = (e.item ?? e.concept ?? e.skill ?? "") as string;
+    const label = e.grade
+      ? `${base} (from ${e.chapter as string}, ${e.grade as string})`
+      : e.chapter
+        ? `${base} (from ${e.chapter as string})`
+        : base;
+    const reason = typeof e.reason === "string" && e.reason ? e.reason : undefined;
+    return { label, reason };
+  }
+  return { label: String(entry) };
+}
+
 function renderCell(column: string, value: string) {
-  if (L1_COLUMNS.includes(column)) {
+  if (L1_COLUMNS.includes(column) || L2_COLUMNS.includes(column) || L3_COLUMNS.includes(column)) {
     try {
       const arr = JSON.parse(value || "[]");
       if (Array.isArray(arr)) {
         if (!arr.length) return <span className="text-muted-foreground">—</span>;
         return (
           <span className="flex flex-wrap gap-1">
-            {arr.map((v: string, i: number) => (
-              <span
-                key={i}
-                className="rounded bg-secondary px-1.5 py-0.5 text-[10px]"
-              >
-                {v}
-              </span>
-            ))}
+            {arr.map((entry, i: number) => {
+              const { label, reason } = prereqEntryLabel(entry);
+              return (
+                <span
+                  key={i}
+                  title={reason}
+                  className="rounded bg-secondary px-1.5 py-0.5 text-[10px]"
+                >
+                  {label}
+                </span>
+              );
+            })}
           </span>
         );
       }
@@ -522,6 +655,22 @@ function ConfirmedCard({
         {!detail.has_prereqs && (
           <span className="text-[var(--qm-blue)]">L1 prerequisites not mapped</span>
         )}
+        {detail.has_prereqs && !detail.has_l2_prereqs && detail.l2_attempted && (
+          <span className="text-[var(--qm-blue)]">
+            L2 checked — no cross-chapter prerequisites found
+          </span>
+        )}
+        {detail.has_prereqs && !detail.has_l2_prereqs && !detail.l2_attempted && (
+          <span className="text-[var(--qm-blue)]">L2 (cross-chapter) not attempted</span>
+        )}
+        {detail.has_prereqs && !detail.has_l3_prereqs && detail.l3_attempted && (
+          <span className="text-[var(--qm-blue)]">
+            L3 checked — no prior-grade prerequisites found
+          </span>
+        )}
+        {detail.has_prereqs && !detail.has_l3_prereqs && !detail.l3_attempted && (
+          <span className="text-[var(--qm-blue)]">L3 (prior-grade) not attempted</span>
+        )}
         <div className="ml-auto flex gap-1">
           <button
             onClick={() => copyCsv(detail.csv_text)}
@@ -539,8 +688,8 @@ function ConfirmedCard({
           </button>
         </div>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full border-collapse text-[11px]">
+      <div className="thin-scroll overflow-x-auto">
+        <table className="w-max min-w-full border-collapse text-[11px]">
           <thead>
             <tr className="border-b border-border">
               {detail.headers.map((col) => (
@@ -557,7 +706,7 @@ function ConfirmedCard({
             {detail.rows.map((row, i) => (
               <tr key={i} className="border-b border-border/50 align-top">
                 {detail.headers.map((col) => (
-                  <td key={col} className="px-3 py-2">
+                  <td key={col} className="min-w-[140px] max-w-[280px] px-3 py-2">
                     {renderCell(col, row[col] ?? "")}
                   </td>
                 ))}
@@ -737,7 +886,10 @@ function RunInsightsCard({
         )}
       </div>
 
-      {(run.pipeline_agents?.map_extraction || run.pipeline_agents?.prerequisite) && (
+      {(run.pipeline_agents?.map_extraction ||
+        run.pipeline_agents?.prerequisite ||
+        run.pipeline_agents?.prerequisite_l2 ||
+        run.pipeline_agents?.prerequisite_l3) && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border px-4 py-2 text-[11px]">
           {run.pipeline_agents?.map_extraction && (
             <span className="flex items-center gap-1.5">
@@ -751,7 +903,7 @@ function RunInsightsCard({
           )}
           {run.pipeline_agents?.prerequisite && (
             <span className="flex items-center gap-1.5">
-              <span className="text-muted-foreground">Prerequisites:</span>
+              <span className="text-muted-foreground">{AGENT_LABELS.prerequisite}:</span>
               <UsageBadge
                 usage={run.pipeline_agents.prerequisite.usage}
                 costUsd={run.pipeline_agents.prerequisite.cost_usd}
@@ -759,6 +911,46 @@ function RunInsightsCard({
               />
             </span>
           )}
+          {run.pipeline_agents?.prerequisite_l2 && (
+            <span className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">{AGENT_LABELS.prerequisite_l2}:</span>
+              <UsageBadge
+                usage={run.pipeline_agents.prerequisite_l2.usage}
+                costUsd={run.pipeline_agents.prerequisite_l2.cost_usd}
+                model={run.pipeline_agents.prerequisite_l2.model}
+              />
+            </span>
+          )}
+          {run.pipeline_agents?.prerequisite_l3 && (
+            <span className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">{AGENT_LABELS.prerequisite_l3}:</span>
+              <UsageBadge
+                usage={run.pipeline_agents.prerequisite_l3.usage}
+                costUsd={run.pipeline_agents.prerequisite_l3.cost_usd}
+                model={run.pipeline_agents.prerequisite_l3.model}
+              />
+            </span>
+          )}
+        </div>
+      )}
+
+      {run.pipeline_agents?.prerequisite_l2 && (
+        <div className="border-b border-border px-4 py-2">
+          <ChapterBreakdown
+            withEdges={run.pipeline_agents.prerequisite_l2.chapters_with_edges}
+            screenedNoEdges={run.pipeline_agents.prerequisite_l2.chapters_screened_no_edges}
+            excludedByScreen={run.pipeline_agents.prerequisite_l2.chapters_excluded_by_screen}
+          />
+        </div>
+      )}
+
+      {run.pipeline_agents?.prerequisite_l3 && (
+        <div className="border-b border-border px-4 py-2">
+          <ChapterBreakdown
+            withEdges={run.pipeline_agents.prerequisite_l3.chapters_with_edges}
+            screenedNoEdges={run.pipeline_agents.prerequisite_l3.chapters_screened_no_edges}
+            excludedByScreen={run.pipeline_agents.prerequisite_l3.chapters_excluded_by_screen}
+          />
         </div>
       )}
 
@@ -808,7 +1000,7 @@ function DetailView({
   onClear: () => void;
 }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="mb-3 flex items-start gap-2">
         <div className="min-w-0">
           <div className="truncate text-sm font-bold">{selected.chapter}</div>
@@ -824,7 +1016,7 @@ function DetailView({
           <X className="h-4 w-4" />
         </button>
       </div>
-      <ScrollArea className="min-h-0 flex-1">
+      <ScrollArea className="min-h-0 min-w-0 flex-1">
         {loading && (
           <div className="text-[11px] text-muted-foreground">Loading detail…</div>
         )}
@@ -876,6 +1068,10 @@ export function AnalyticsPanel({
   onSelect,
   onClear,
 }: AnalyticsPanelProps) {
+  // Collapses the chapter tree once a chapter is selected, so the detail panel
+  // (confirmed CSV / run insights) gets the room its wide tables need.
+  const [treeOpen, setTreeOpen] = useState(true);
+
   if (loading) {
     return (
       <div className="p-6 text-sm text-muted-foreground">Loading analytics…</div>
@@ -889,7 +1085,7 @@ export function AnalyticsPanel({
     !!filters.board || !!filters.subject || !!filters.grade || (filters.models?.length ?? 0) > 0;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-6 p-6">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-6 p-6">
       <AnalyticsFilterBar
         filters={filters}
         onFiltersChange={onFiltersChange}
@@ -906,31 +1102,49 @@ export function AnalyticsPanel({
         <>
           <SummaryRow data={data} />
           <ModelPerformancePanel data={modelPerformance} />
-          <div className="flex min-h-0 flex-1 gap-6">
-            {/* Grouped tree */}
+          <div className="flex min-h-0 min-w-0 flex-1 gap-6">
+            {/* Grouped tree — collapsible once a chapter is selected, so the
+                detail panel's tables have room to breathe. */}
             <div
               className={cn(
-                "min-h-0 flex-1",
-                selected && "hidden lg:block lg:max-w-md lg:shrink-0"
+                "relative min-h-0",
+                !selected && "flex-1",
+                selected && "hidden lg:block lg:shrink-0",
+                selected && (treeOpen ? "lg:max-w-md" : "lg:w-10")
               )}
             >
-              <ScrollArea className="h-full">
-                <div className="space-y-3 pr-2">
-                  {buildBoardTree(data.groups).map((b) => (
-                    <BoardSection
-                      key={b.board}
-                      node={b}
-                      selected={selected}
-                      onSelect={onSelect}
-                    />
-                  ))}
-                </div>
-              </ScrollArea>
+              {selected && (
+                <button
+                  onClick={() => setTreeOpen((p) => !p)}
+                  title={treeOpen ? "Collapse chapter list" : "Expand chapter list"}
+                  className="absolute -right-3 top-2 z-20 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm hover:text-foreground transition-colors"
+                >
+                  {treeOpen ? (
+                    <ChevronLeft className="h-3 w-3" />
+                  ) : (
+                    <ChevronRight className="h-3 w-3" />
+                  )}
+                </button>
+              )}
+              {(!selected || treeOpen) && (
+                <ScrollArea className="h-full">
+                  <div className="space-y-3 pr-2">
+                    {buildBoardTree(data.groups).map((b) => (
+                      <BoardSection
+                        key={b.board}
+                        node={b}
+                        selected={selected}
+                        onSelect={onSelect}
+                      />
+                    ))}
+                  </div>
+                </ScrollArea>
+              )}
             </div>
 
             {/* Drill-down */}
             {selected && (
-              <div className="flex min-h-0 flex-1 flex-col">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                 <DetailView
                   selected={selected}
                   detail={detail}

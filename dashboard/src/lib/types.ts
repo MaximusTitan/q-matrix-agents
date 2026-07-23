@@ -35,6 +35,7 @@ export const AGENT_KEYS = [
   "judge",
   "prerequisite",
   "prerequisite_l2",
+  "prerequisite_l3",
 ] as const;
 
 export type AgentKey = (typeof AGENT_KEYS)[number];
@@ -144,6 +145,13 @@ export type QueueItemStatus =
 export interface QueueItem extends RunFormValues {
   id: string;
   status: QueueItemStatus;
+  // When set, this item runs L2 (cross-chapter) prerequisite mapping instead of
+  // the full generate pipeline — mirrors StartRunOptions.l2Prerequisite.
+  l2Prerequisite?: boolean;
+  // When set, this item runs L3 (cross-grade) prerequisite mapping instead of
+  // the full generate pipeline — mirrors StartRunOptions.l3Prerequisite.
+  l3Prerequisite?: boolean;
+  models?: Partial<Record<AgentKey, string>>;
 }
 
 export interface RunMetadata {
@@ -169,6 +177,11 @@ export interface AnalyticsSummary {
   total_chapters: number;
   confirmed: number; // confirmed CSV WITH L1 prerequisites mapped
   confirmed_no_prereqs: number; // confirmed CSV but L1 columns empty
+  confirmed_l2_prereqs: number; // subset of `confirmed` that also has L2 mapped
+  // Subset of `confirmed` that also has L3 mapped. NOT a subset of
+  // confirmed_l2_prereqs — L3's eligibility gate only requires L1 (own grade +
+  // every earlier grade), not L2, so a chapter can have L3 without L2.
+  confirmed_l3_prereqs: number;
   escalated: number;
   mapped_only: number;
 }
@@ -178,6 +191,15 @@ export interface AnalyticsChapter {
   status: ChapterStatus;
   has_prereqs: boolean;
   has_l2_prereqs: boolean;
+  // True once an L2 run has completed for this chapter's current data, regardless
+  // of whether it found any genuine cross-chapter prerequisite — distinguishes
+  // "L2 ran, found nothing" from "L2 was never run" (both look like has_l2_prereqs
+  // === false otherwise).
+  l2_attempted: boolean;
+  has_l3_prereqs: boolean;
+  // L3 analogue of l2_attempted — distinguishes "L3 ran, found nothing" from
+  // "L3 was never run".
+  l3_attempted: boolean;
   escalation_count: number;
   latest_failed_check: string | null;
   attempts: number | null;
@@ -189,6 +211,107 @@ export interface L2EligibleChaptersResponse {
   eligible: boolean;
   blocking_chapters: string[];
   chapters: { chapter: string; has_l2_prereqs: boolean }[];
+}
+
+// ─── L3 (cross-grade) prerequisite mapping ────────────────────────────────────
+
+export interface L3EligibleChaptersResponse {
+  eligible: boolean;
+  blocking_chapters: string[];
+  // How many grades earlier than the target grade exist for this board+subject.
+  // 0 means there is nothing to map against yet — the UI should show a
+  // "no earlier grades" state rather than a blocking-chapters list.
+  prior_grade_count: number;
+  chapters: { chapter: string; has_l3_prereqs: boolean }[];
+}
+
+// ─── Prerequisite mapping edges (L1 within-chapter / L2 cross-chapter / L3 cross-grade) ─
+// Shapes match agents/prerequisite.py, agents/prerequisite_l2.py, and
+// agents/prerequisite_l3.py's `run()` output, forwarded verbatim through the
+// "Prerequisites"/"PrerequisitesL2"/"PrerequisitesL3" agent_completed SSE event.
+// Older confirmed CSVs predate the "reason" field (and, for L1, may still hold
+// bare strings) — treat both as optional/absent.
+
+export interface PrereqItem {
+  item: string;
+  reason?: string;
+}
+
+export interface L2Edge {
+  chapter: string;
+  concept?: string;
+  skill?: string;
+  reason?: string;
+}
+
+export interface L3Edge {
+  grade: string;
+  chapter: string;
+  concept?: string;
+  skill?: string;
+  reason?: string;
+}
+
+export interface PrerequisiteAgentOutput {
+  concept_edges?: Record<string, PrereqItem[]>;
+  skill_edges?: Record<string, PrereqItem[]>;
+  concept_edge_count?: number;
+  skill_edge_count?: number;
+  warnings?: string[];
+  checkpoint?: string | null;
+  usage?: Usage;
+  cost_usd?: number;
+  model?: string | null;
+}
+
+// Partitions every sibling chapter in the grade/subject into exactly one bucket —
+// contributed a prerequisite, screened as related but contributed nothing, or
+// never made it past the cheap relevance screen. Absent entirely on runs
+// persisted before this was added (older run.json / older SSE payload) — treat
+// "field is undefined" as "no breakdown data available", not "empty".
+export interface L2ChapterBreakdown {
+  chapters_with_edges?: string[];
+  chapters_screened_no_edges?: string[];
+  chapters_excluded_by_screen?: string[];
+}
+
+export interface PrerequisiteL2AgentOutput extends L2ChapterBreakdown {
+  concept_edges?: Record<string, L2Edge[]>;
+  skill_edges?: Record<string, L2Edge[]>;
+  concept_edge_count?: number;
+  skill_edge_count?: number;
+  sibling_chapter_count?: number;
+  candidate_chapter_count?: number;
+  warnings?: string[];
+  checkpoint?: string | null;
+  usage?: Usage;
+  cost_usd?: number;
+  model?: string | null;
+  error?: string;
+}
+
+// L3 analogue of L2ChapterBreakdown — grade-qualified since chapter names repeat
+// across grades. Same "undefined = no breakdown data" vs "[] = empty bucket" rule.
+export interface L3ChapterBreakdown {
+  chapters_with_edges?: { grade: string; chapter: string }[];
+  chapters_screened_no_edges?: { grade: string; chapter: string }[];
+  chapters_excluded_by_screen?: { grade: string; chapter: string }[];
+  prior_grade_count?: number;
+}
+
+export interface PrerequisiteL3AgentOutput extends L3ChapterBreakdown {
+  concept_edges?: Record<string, L3Edge[]>;
+  skill_edges?: Record<string, L3Edge[]>;
+  concept_edge_count?: number;
+  skill_edge_count?: number;
+  sibling_chapter_count?: number;
+  candidate_chapter_count?: number;
+  warnings?: string[];
+  checkpoint?: string | null;
+  usage?: Usage;
+  cost_usd?: number;
+  model?: string | null;
+  error?: string;
 }
 
 export interface AnalyticsGroup {
@@ -372,7 +495,8 @@ export interface ChapterRunRecord {
   pipeline_agents?: {
     map_extraction?: PipelineAgentUsage;
     prerequisite?: PipelineAgentUsage;
-    prerequisite_l2?: PipelineAgentUsage;
+    prerequisite_l2?: PipelineAgentUsage & L2ChapterBreakdown;
+    prerequisite_l3?: PipelineAgentUsage & L3ChapterBreakdown;
   };
   total_usage?: Usage;
   total_cost_usd?: number;
@@ -389,6 +513,9 @@ export interface ChapterAnalytics {
     rows: Record<string, string>[];
     has_prereqs: boolean;
     has_l2_prereqs: boolean;
+    l2_attempted: boolean;
+    has_l3_prereqs: boolean;
+    l3_attempted: boolean;
   } | null;
   escalations: EscalationReport[];
   concept_skill_map: {
@@ -409,6 +536,9 @@ export interface StartRunOptions extends RunFormValues {
   // When set, runs L2 (cross-chapter) prerequisite mapping for the given
   // board/subject/grade/chapter instead of the full pipeline or L1 CSV mode.
   l2Prerequisite?: boolean;
+  // When set, runs L3 (cross-grade) prerequisite mapping for the given
+  // board/subject/grade/chapter instead of the full pipeline or L1/L2 CSV mode.
+  l3Prerequisite?: boolean;
   // Per-agent model override (Gateway model id). Omitted keys fall back to the
   // pipeline default server-side. Not part of RunFormValues/QueueItem — batch-queued
   // chapters always use the pipeline default unless explicitly set here per-run.

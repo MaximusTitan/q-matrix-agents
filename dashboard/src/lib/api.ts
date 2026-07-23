@@ -3,6 +3,7 @@ import type {
   AnalyticsResponse,
   ChapterAnalytics,
   L2EligibleChaptersResponse,
+  L3EligibleChaptersResponse,
   ModelPerformanceResponse,
   RunFormValues,
   RunMetadata,
@@ -108,6 +109,25 @@ export async function postRunL2Prerequisite(
   values: RunFormValues & { no_sync?: boolean } & ModelsOverride
 ): Promise<{ run_id: string }> {
   return post("/run-l2-prerequisite", { ...values, no_sync: true });
+}
+
+export async function fetchL3EligibleChapters(
+  board: string,
+  subject: string,
+  grade: string
+): Promise<L3EligibleChaptersResponse> {
+  const params = new URLSearchParams({ board, subject, grade });
+  const res = await fetch(`${API_BASE}/kb/l3-eligible-chapters?${params}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch L3-eligible chapters: ${res.status}`);
+  }
+  return res.json() as Promise<L3EligibleChaptersResponse>;
+}
+
+export async function postRunL3Prerequisite(
+  values: RunFormValues & { no_sync?: boolean } & ModelsOverride
+): Promise<{ run_id: string }> {
+  return post("/run-l3-prerequisite", { ...values, no_sync: true });
 }
 
 export interface AnalyticsFilters {

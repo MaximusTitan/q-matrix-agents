@@ -38,6 +38,7 @@ from orchestrator import (
     handle_re_extract,
     run_prerequisite_only,
     run_l2_prerequisite_only,
+    run_l3_prerequisite_only,
     _identifiers_from_rows,
 )
 from skills.csv_utils import validate_csv_schema, parse_csv
@@ -98,6 +99,15 @@ class PrereqOnlyRequest(BaseModel):
 
 
 class L2PrereqRequest(BaseModel):
+    board:   str
+    subject: str
+    grade:   str
+    chapter: str
+    models:  dict[str, str] | None = None
+    no_sync: bool = True
+
+
+class L3PrereqRequest(BaseModel):
     board:   str
     subject: str
     grade:   str
@@ -288,6 +298,51 @@ async def run_l2_prerequisite_route(req: L2PrereqRequest):
     return {"run_id": run_id}
 
 
+@app.get("/kb/l3-eligible-chapters")
+async def kb_l3_eligible_chapters(board: str, subject: str, grade: str):
+    """
+    Chapters in a board/subject/grade eligible for L3 (cross-grade) prerequisite
+    mapping. Eligibility requires the target chapter's own grade+subject to have
+    every chapter L1-mapped (same precondition L2 has, so the target itself has
+    L1) AND every chapter in every EARLIER grade of the same subject to already
+    have L1 prerequisites mapped — L3 needs that cross-grade candidate pool.
+    """
+    chapters = kb_access.list_chapters_in_grade_subject(board, subject, grade)
+    blocking = [c["chapter"] for c in chapters if not c["has_l1_prereqs"]]
+    prior_grade_count = len(kb_access.earlier_grades(board, subject, grade))
+    prior_complete = kb_access.subject_prior_grades_l1_complete(board, subject, grade)
+    eligible = bool(chapters) and not blocking and prior_complete
+    return {
+        "eligible": eligible,
+        "blocking_chapters": blocking,
+        "prior_grade_count": prior_grade_count,
+        "chapters": (
+            [{"chapter": c["chapter"], "has_l3_prereqs": c["has_l3_prereqs"]} for c in chapters]
+            if eligible else []
+        ),
+    }
+
+
+@app.post("/run-l3-prerequisite")
+async def run_l3_prerequisite_route(req: L3PrereqRequest):
+    """Start an L3 (cross-grade) prerequisite mapping run for one target chapter."""
+    if not kb_access.subject_prior_grades_l1_complete(req.board, req.subject, req.grade):
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Not every chapter in every grade earlier than {req.grade} "
+                    f"(same {req.board}/{req.subject}) has L1 prerequisites mapped yet "
+                    "— or there are no earlier grades — L3 mapping is not available."),
+        )
+
+    run_id = bus.create_run(req.board, req.subject, req.grade, req.chapter)
+    _spawn_run(
+        run_id, run_l3_prerequisite_only,
+        board=req.board, subject=req.subject, grade=req.grade, chapter=req.chapter,
+        models=req.models,
+    )
+    return {"run_id": run_id}
+
+
 @app.post("/re-extract")
 async def re_extract(req: ReExtractRequest):
     """Re-run map extraction with guidance, then re-run full pipeline."""
@@ -428,6 +483,7 @@ async def kb_analytics(
         return {
             "summary": {
                 "total_chapters": 0, "confirmed": 0, "confirmed_no_prereqs": 0,
+                "confirmed_l2_prereqs": 0, "confirmed_l3_prereqs": 0,
                 "escalated": 0, "mapped_only": 0,
             },
             "groups": [],
@@ -506,6 +562,9 @@ async def kb_analytics(
             "status": e["status"],
             "has_prereqs": e["has_prereqs"],
             "has_l2_prereqs": e["has_l2_prereqs"],
+            "l2_attempted": e["l2_attempted"],
+            "has_l3_prereqs": e["has_l3_prereqs"],
+            "l3_attempted": e["l3_attempted"],
             "escalation_count": e["escalation_count"],
             "latest_failed_check": e["latest_failed_check"],
             "attempts": e["attempts"],
@@ -519,6 +578,15 @@ async def kb_analytics(
         "total_chapters": len(entries),
         "confirmed": sum(1 for e in entries if e["status"] == "confirmed" and e["has_prereqs"]),
         "confirmed_no_prereqs": sum(1 for e in entries if e["status"] == "confirmed" and not e["has_prereqs"]),
+        "confirmed_l2_prereqs": sum(
+            1 for e in entries if e["status"] == "confirmed" and e["has_prereqs"] and e["has_l2_prereqs"]
+        ),
+        # NOTE: has_l3_prereqs does NOT imply has_l2_prereqs — the L3 eligibility gate
+        # only requires L1 (own grade + every earlier grade), not L2 — so this is
+        # intentionally NOT a strict subset of confirmed_l2_prereqs, unlike L2-of-L1.
+        "confirmed_l3_prereqs": sum(
+            1 for e in entries if e["status"] == "confirmed" and e["has_prereqs"] and e["has_l3_prereqs"]
+        ),
         "escalated": sum(1 for e in entries if e["status"] == "escalated"),
         "mapped_only": sum(1 for e in entries if e["status"] == "mapped"),
     }
@@ -540,20 +608,32 @@ def _build_chapter_entry(
         status = "confirmed"
         has_prereqs = kb_access.confirmed_csv_has_prereqs(board, subject, grade, chapter)
         has_l2_prereqs = kb_access.confirmed_csv_has_l2_prereqs(board, subject, grade, chapter)
+        l2_attempted = kb_access.confirmed_csv_l2_attempted(board, subject, grade, chapter)
+        has_l3_prereqs = kb_access.confirmed_csv_has_l3_prereqs(board, subject, grade, chapter)
+        l3_attempted = kb_access.confirmed_csv_l3_attempted(board, subject, grade, chapter)
     elif escalations:
         status = "escalated"
         has_prereqs = False
         has_l2_prereqs = False
+        l2_attempted = False
+        has_l3_prereqs = False
+        l3_attempted = False
     else:
         status = "mapped"
         has_prereqs = False
         has_l2_prereqs = False
+        l2_attempted = False
+        has_l3_prereqs = False
+        l3_attempted = False
 
     return {
         "board": board, "subject": subject, "grade": grade, "chapter": chapter,
         "status": status,
         "has_prereqs": has_prereqs,
         "has_l2_prereqs": has_l2_prereqs,
+        "l2_attempted": l2_attempted,
+        "has_l3_prereqs": has_l3_prereqs,
+        "l3_attempted": l3_attempted,
         "escalation_count": len(escalations),
         "latest_failed_check": (latest or {}).get("failed_check") or None,
         "attempts": (latest or {}).get("total_attempts"),
@@ -656,6 +736,9 @@ async def kb_analytics_chapter(board: str, subject: str, grade: str, chapter: st
                 "rows": rows,
                 "has_prereqs": kb_access.confirmed_csv_has_prereqs(board, subject, grade, chapter),
                 "has_l2_prereqs": kb_access.confirmed_csv_has_l2_prereqs(board, subject, grade, chapter),
+                "l2_attempted": kb_access.confirmed_csv_l2_attempted(board, subject, grade, chapter),
+                "has_l3_prereqs": kb_access.confirmed_csv_has_l3_prereqs(board, subject, grade, chapter),
+                "l3_attempted": kb_access.confirmed_csv_l3_attempted(board, subject, grade, chapter),
             }
     except Exception:
         pass

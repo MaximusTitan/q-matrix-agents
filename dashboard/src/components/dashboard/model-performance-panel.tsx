@@ -145,13 +145,6 @@ export function ModelPerformancePanel({ data }: { data: ModelPerformanceResponse
             <Stat label="Runs Analyzed" value={String(data.total_runs)} />
             <Stat label="Total Spend" value={formatCost(data.total_cost_usd) || "$0"} />
             <Stat label="Models In Use" value={String(data.distinct_models)} />
-            {data.by_provider.map((p) => (
-              <Stat
-                key={p.provider}
-                label={p.provider}
-                value={formatCost(p.total_cost_usd) || "$0"}
-              />
-            ))}
           </div>
 
           <div className="thin-scroll max-h-[420px] space-y-2 overflow-y-auto pr-1">

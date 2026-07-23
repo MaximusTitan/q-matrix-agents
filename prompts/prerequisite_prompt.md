@@ -26,6 +26,9 @@ belongs to it).
 4. Only assert a prerequisite when there is a genuine learning dependency — a student truly
    cannot do/understand the target without the prerequisite. When in doubt, leave it out.
    Most chapters have only a few real prerequisite links; do not pad.
+5. For every prerequisite you assert, give a one-sentence `reason` explaining the specific
+   learning dependency — what about the target actually requires the prerequisite. Do not
+   just restate the two item names; state the dependency itself.
 
 Hard constraints:
 - Use concept and skill text **exactly** as it appears in the CSV (verbatim, character for
@@ -48,10 +51,12 @@ Respond with STRICT JSON only — no prose, no markdown fences:
 ```
 {
   "concept_prerequisites": [
-    { "concept": "<target concept, verbatim>", "prerequisites": ["<prerequisite concept, verbatim>", ...] }
+    { "concept": "<target concept, verbatim>",
+      "prerequisites": [{ "item": "<prerequisite concept, verbatim>", "reason": "<one-sentence learning dependency>" }] }
   ],
   "skill_prerequisites": [
-    { "skill": "<target skill, verbatim>", "prerequisites": ["<prerequisite skill, verbatim>", ...] }
+    { "skill": "<target skill, verbatim>",
+      "prerequisites": [{ "item": "<prerequisite skill, verbatim>", "reason": "<one-sentence learning dependency>" }] }
   ]
 }
 ```
@@ -59,6 +64,8 @@ Respond with STRICT JSON only — no prose, no markdown fences:
 Rules for the JSON:
 - Each `prerequisites` entry is a prerequisite **of** the keyed `concept`/`skill`, not the
   reverse.
-- Every string MUST match a concept/skill present in the CSV verbatim.
+- Every `item` string MUST match a concept/skill present in the CSV verbatim.
+- Every `reason` must be a specific, one-sentence explanation — not a restatement of the item
+  names.
 - If the chapter has no within-chapter prerequisites at all, return
   `{"concept_prerequisites": [], "skill_prerequisites": []}`.
