@@ -1,0 +1,17 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/MaximusTitan/q-matrix-agents/blob/main/SECURITY.md
+    about: >-
+      Do not open a public issue for vulnerabilities. Read SECURITY.md and email
+      shrideep@prosoftpeople.com with [SECURITY] in the subject line.
+  - name: Contributing guide
+    url: https://github.com/MaximusTitan/q-matrix-agents/blob/main/CONTRIBUTING.md
+    about: >-
+      Branch and PR workflow, testing expectations, code style, and how to propose a new
+      agent, a new skill module, or a pipeline improvement.
+  - name: Curriculum data, rulesets, and KB structure
+    url: https://github.com/MaximusTitan/q-matrix-kb-template
+    about: >-
+      Curriculum material, ruleset content, and knowledge-base structure changes belong in
+      the KB template repository, which documents its own rights-attestation requirements.
