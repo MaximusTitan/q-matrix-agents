@@ -44,8 +44,47 @@ def _chapter_pdf_path(board: str, subject: str, grade: str, chapter: str) -> str
 def _run_dir_path(board: str, subject: str, grade: str, chapter: str) -> str:
     return os.path.join(_textbook_path(board, subject, grade, chapter), "run")
 
-def _run_record_path(board: str, subject: str, grade: str, chapter: str) -> str:
-    return os.path.join(_run_dir_path(board, subject, grade, chapter), "run.json")
+# Stage-tagged subfolders, one live run/ subtree per pipeline stage, so a later
+# stage's run (e.g. L2 cross-chapter prerequisite mapping) never clobbers an
+# earlier stage's (e.g. the full L1 pipeline) cost/usage data or artifacts —
+# each stage owns its own `confirmed.csv`, `report.md`, etc. Keyed by
+# RunRecordBuilder's `mode` field; any mode not listed here (forward-compat)
+# falls back to a slug derived from the mode string itself.
+_RUN_STAGE_SLUGS = {
+    "full": "full",
+    "prerequisite_only": "l1_prereq",
+    "l2_prerequisite_only": "l2",
+    "l3_prerequisite_only": "l3",
+}
+
+# Reverse of _RUN_STAGE_SLUGS, for reconstructing which mode a stage folder holds.
+_RUN_STAGE_MODES = {slug: mode for mode, slug in _RUN_STAGE_SLUGS.items()}
+
+
+def _run_stage_slug(mode: str | None) -> str:
+    return _RUN_STAGE_SLUGS.get(mode, mode or "full")
+
+
+def _run_stage_dir_path(board: str, subject: str, grade: str, chapter: str, mode: str | None) -> str:
+    return os.path.join(_run_dir_path(board, subject, grade, chapter), _run_stage_slug(mode))
+
+
+def _run_record_path(board: str, subject: str, grade: str, chapter: str, mode: str | None = None) -> str:
+    return os.path.join(_run_stage_dir_path(board, subject, grade, chapter, mode), "run.json")
+
+
+def _existing_run_stage_dirs(board: str, subject: str, grade: str, chapter: str) -> list[str]:
+    """Every stage subfolder that currently exists under this chapter's run/ dir."""
+    run_dir = _run_dir_path(board, subject, grade, chapter)
+    if not os.path.isdir(run_dir):
+        return []
+    return sorted(
+        name for name in os.listdir(run_dir)
+        if os.path.isdir(os.path.join(run_dir, name))
+    )
+
+def _run_history_dir_path(board: str, subject: str, grade: str, chapter: str) -> str:
+    return os.path.join(KB_ROOT, "run_history", board, subject, grade, chapter)
 
 def _grade_prompt_path(board: str, subject: str, grade: str) -> str:
     return os.path.join(KB_ROOT, "prompt-library", board, subject, grade, "prompt.md")
@@ -369,11 +408,13 @@ def save_run_record(
     report_md: str,
 ) -> str:
     """
-    Persist the structured run record for a chapter, overwriting any previous run.
+    Persist the structured run record for one pipeline stage of a chapter,
+    overwriting any previous run of that SAME stage only.
 
-    Layout (latest run only — the folder is cleared first so a shorter re-run never
-    leaves orphaned siblings from a longer previous run):
-        textbooks/{board}/{subject}/{grade}/{chapter}/run/
+    Layout (latest run per stage — each stage's own subfolder is cleared first so
+    a shorter re-run of that stage never leaves orphaned siblings from a longer
+    previous run of it, while sibling stages are left untouched):
+        textbooks/{board}/{subject}/{grade}/{chapter}/run/{stage}/
             run.json                          ← structured source of truth (pointers)
             gen_attempt_{n}.csv               ← generator output per attempt
             doctored_attempt_{n}.csv          ← coverage-doctor output
@@ -382,47 +423,43 @@ def save_run_record(
             confirmed.csv | last_csv.csv      ← final CSV
             report.md                         ← derived human-readable summary
 
+    ``{stage}`` is derived from ``record["mode"]`` (see ``_RUN_STAGE_SLUGS``) — this
+    is what keeps an L2/L3-only run from destroying the full L1 pipeline's cost data
+    (and vice versa), since each stage owns a distinct subfolder.
+
     Args:
         record:    Fully-assembled run.json dict (with *_file pointers only).
         artifacts: Map of sibling filename -> file content (CSV text / prompt md).
         report_md: Pre-rendered report.md (from report_render.render_report_md).
 
     Returns:
-        Path to the run/ folder.
+        Path to this stage's run/{stage}/ folder.
     """
-    run_dir = _run_dir_path(board, subject, grade, chapter)
-    remove_dir(run_dir)
-    create_directory(run_dir)
+    stage_dir = _run_stage_dir_path(board, subject, grade, chapter, record.get("mode"))
+    remove_dir(stage_dir)
+    create_directory(stage_dir)
 
     # json.dump with a stable key order + indent keeps re-run diffs readable.
     record_json = json.dumps(record, indent=2, ensure_ascii=False, sort_keys=False)
-    write_file(os.path.join(run_dir, "run.json"), record_json)
+    write_file(os.path.join(stage_dir, "run.json"), record_json)
 
     for filename, content in artifacts.items():
-        write_file(os.path.join(run_dir, filename), content or "")
+        write_file(os.path.join(stage_dir, filename), content or "")
 
-    write_file(os.path.join(run_dir, "report.md"), report_md)
+    write_file(os.path.join(stage_dir, "report.md"), report_md)
 
-    return run_dir
+    return stage_dir
 
 
 def run_record_exists(board: str, subject: str, grade: str, chapter: str) -> bool:
-    """Whether a structured run/run.json exists for a chapter."""
-    return file_exists(_run_record_path(board, subject, grade, chapter))
+    """Whether any structured run/{stage}/run.json exists for a chapter."""
+    return any(
+        file_exists(os.path.join(_run_dir_path(board, subject, grade, chapter), slug, "run.json"))
+        for slug in _existing_run_stage_dirs(board, subject, grade, chapter)
+    )
 
 
-def load_run_record(board: str, subject: str, grade: str, chapter: str) -> dict | None:
-    """
-    Load the latest structured run record for a chapter.
-
-    Returns:
-        The parsed run.json dict, or None if the chapter has no run/ folder yet
-        (legacy chapters predating run records).
-
-    Raises:
-        ValueError: if run.json exists but is malformed.
-    """
-    path = _run_record_path(board, subject, grade, chapter)
+def _load_run_record_at(path: str) -> dict | None:
     if not file_exists(path):
         return None
     # Read raw (not read_file, which strips Obsidian YAML frontmatter) — JSON must
@@ -435,27 +472,134 @@ def load_run_record(board: str, subject: str, grade: str, chapter: str) -> dict 
         raise ValueError(f"Malformed run.json at {path}: {e}") from e
 
 
-def load_run_artifact(board: str, subject: str, grade: str, chapter: str,
-                      filename: str) -> str:
+def load_run_record(
+    board: str, subject: str, grade: str, chapter: str, mode: str | None = None,
+) -> dict | None:
     """
-    Read one sibling artifact (a CSV / prompt / report) from a chapter's run/ folder.
+    Load the latest structured run record for one pipeline stage of a chapter.
+
+    Args:
+        mode: Which stage's record to load (see ``_RUN_STAGE_SLUGS``). Defaults to
+              ``"full"`` — the full L1 generation pipeline — for backward
+              compatibility with callers that only ever cared about one run.
+
+    Returns:
+        The parsed run.json dict, or None if that stage has no run yet (including
+        legacy chapters predating run records, or chapters never run through this
+        stage).
+
+    Raises:
+        ValueError: if run.json exists but is malformed.
+    """
+    return _load_run_record_at(_run_record_path(board, subject, grade, chapter, mode))
+
+
+def archive_run_history_record(board: str, subject: str, grade: str, chapter: str, record: dict) -> str:
+    """
+    Permanently archive one superseded run record for a chapter, keyed by its own
+    ``run_id`` so it is never overwritten — mirrors the escalations/ pattern, but for
+    ordinary (non-escalated) runs that would otherwise be lost when a later pipeline
+    stage overwrites that stage's live run/{stage}/run.json.
+
+    Used by the one-time git-history recovery for runs that predate the per-stage
+    storage layout (see save_run_record) and were destroyed by an old re-run before
+    that fix existed; not called by the live pipeline itself.
+
+    Returns:
+        Path to the written run_history/.../{run_id}.json file.
+    """
+    run_id = record["run_id"]
+    history_dir = _run_history_dir_path(board, subject, grade, chapter)
+    create_directory(history_dir)
+    path = os.path.join(history_dir, f"{run_id}.json")
+    write_file(path, json.dumps(record, indent=2, ensure_ascii=False, sort_keys=False))
+    return path
+
+
+def load_run_history_records(board: str, subject: str, grade: str, chapter: str) -> list[dict]:
+    """Every archived (superseded) run record for a chapter, oldest storage first."""
+    history_dir = _run_history_dir_path(board, subject, grade, chapter)
+    if not os.path.isdir(history_dir):
+        return []
+    records = []
+    for name in sorted(os.listdir(history_dir)):
+        if not name.endswith(".json"):
+            continue
+        rec = _load_run_record_at(os.path.join(history_dir, name))
+        if rec:
+            records.append(rec)
+    return records
+
+
+def list_all_run_history_records() -> list[dict]:
+    """
+    Every archived run record under run_history/, walked directly rather than via
+    ``list_textbook_chapters()`` — so cost from a chapter that has since been renamed
+    or removed from textbooks/ (a curriculum edit, not a re-run) still counts toward
+    the KB-wide totals, the same way list_escalations() isn't gated on the chapter
+    still existing either.
+    """
+    root = os.path.join(KB_ROOT, "run_history")
+    if not os.path.isdir(root):
+        return []
+    records = []
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            if not name.endswith(".json"):
+                continue
+            rec = _load_run_record_at(os.path.join(dirpath, name))
+            if rec:
+                records.append(rec)
+    return records
+
+
+def load_all_run_records_for_chapter(
+    board: str, subject: str, grade: str, chapter: str,
+) -> list[dict]:
+    """
+    Load every run record for one chapter — each stage's live run (full L1 pipeline,
+    L1-only prerequisite mapping, L2, L3 — whichever stages have actually been run)
+    plus any archived/superseded runs recovered into run_history/, deduped by
+    run_id. Lets the chapter-detail view and analytics totals reflect every distinct
+    run ever recorded, not just whichever stage happened to run most recently.
+    """
+    records: dict[str, dict] = {}
+    for slug in _existing_run_stage_dirs(board, subject, grade, chapter):
+        path = os.path.join(_run_dir_path(board, subject, grade, chapter), slug, "run.json")
+        rec = _load_run_record_at(path)
+        if rec:
+            records[rec["run_id"]] = rec
+    for rec in load_run_history_records(board, subject, grade, chapter):
+        records.setdefault(rec["run_id"], rec)
+    return list(records.values())
+
+
+def load_run_artifact(board: str, subject: str, grade: str, chapter: str,
+                      filename: str, mode: str | None = None) -> str:
+    """
+    Read one sibling artifact (a CSV / prompt / report) from one pipeline stage's
+    run/{stage}/ folder.
 
     SECURITY: ``filename`` is user-controlled (it flows in from an API query param).
     It MUST match the strict whitelist ``_RUN_FILE_RE`` — a bare name from run.json's
     ``*_file`` pointers, with no path separators, no ``..`` and no leading dot — BEFORE
     it is ever joined onto a filesystem path.
 
+    Args:
+        mode: Which stage's folder to read from (see ``_RUN_STAGE_SLUGS``); defaults
+              to ``"full"`` for backward compatibility.
+
     Returns:
         The artifact's text content.
 
     Raises:
         ValueError:        if filename fails whitelist validation.
-        FileNotFoundError: if the artifact does not exist in the run/ folder.
+        FileNotFoundError: if the artifact does not exist in that stage's folder.
     """
     if not _RUN_FILE_RE.match(filename):
         raise ValueError(f"Invalid run artifact filename: {filename!r}")
 
-    path = os.path.join(_run_dir_path(board, subject, grade, chapter), filename)
+    path = os.path.join(_run_stage_dir_path(board, subject, grade, chapter, mode), filename)
     if not file_exists(path):
         raise FileNotFoundError(f"Run artifact not found: {filename}")
     return read_file(path)
@@ -772,13 +916,20 @@ def list_all_run_records() -> list[dict]:
     """
     Every structured run record in the KB — both sources, deduped by run_id.
 
-    Two on-disk sources hold run.json:
-        textbooks/{board}/{subject}/{grade}/{chapter}/run/run.json
-            latest run only (pass or fail) — overwritten every re-run.
+    Three on-disk sources hold run.json:
+        textbooks/{board}/{subject}/{grade}/{chapter}/run/{stage}/run.json
+            latest run per stage (full L1 pipeline, L1-only, L2, L3) — each
+            stage's own subfolder is overwritten only by a later run of that
+            SAME stage, so an L2/L3 run never destroys the full pipeline's
+            record (see save_run_record).
         escalations/{board}/{subject}/{grade}/{chapter}/{date}/run.json
             one snapshot per historical failure, accumulated by date, never
             overwritten (write_escalation persists a full run.json here too,
             not just report.md).
+        run_history/{board}/{subject}/{grade}/{chapter}/{run_id}.json
+            runs superseded before the per-stage layout existed, recovered from
+            git history and archived by run_id — never overwritten (see
+            archive_run_history_record).
 
     A chapter currently sitting in escalated state has its current failure
     present in BOTH sources with the same run_id — deduping on that key means
@@ -788,8 +939,9 @@ def list_all_run_records() -> list[dict]:
     records: dict[str, dict] = {}
 
     for ch in list_textbook_chapters():
-        rec = load_run_record(ch["board"], ch["subject"], ch["grade"], ch["chapter"])
-        if rec:
+        for rec in load_all_run_records_for_chapter(
+            ch["board"], ch["subject"], ch["grade"], ch["chapter"]
+        ):
             records[rec["run_id"]] = rec
 
     for esc in list_escalations():
@@ -805,6 +957,11 @@ def list_all_run_records() -> list[dict]:
         except json.JSONDecodeError:
             continue
         records[rec["run_id"]] = rec
+
+    # Walked directly (not gated on list_textbook_chapters()) so archived cost for a
+    # chapter renamed/removed since the run happened still counts toward KB totals.
+    for rec in list_all_run_history_records():
+        records.setdefault(rec["run_id"], rec)
 
     return list(records.values())
 
@@ -1029,30 +1186,54 @@ def list_grades_in_board_subject(board: str, subject: str) -> list[str]:
     return sorted(grades, key=_grade_sort_key)
 
 
-def earlier_grades(board: str, subject: str, grade: str) -> list[str]:
+# L3-only: subject folder names to also search for prerequisite candidates,
+# in addition to the target subject itself. CBSE introduces Science as its
+# own subject starting Grade 6 — Grades 3-5 cover the same introductory
+# ground under Environmental Science (EVS) instead, so EVS grades are valid
+# L3 prerequisite sources for Science's earliest grades. This does NOT apply
+# to L1/L2 (grade_subject_l1_complete, list_chapters_in_grade_subject stay
+# exact-match), only to the "earlier grades" discovery below.
+_PREREQ_SUBJECT_ALIASES: dict[str, tuple[str, ...]] = {
+    "Science": ("Environmental Science",),
+}
+
+
+def _prereq_source_subjects(subject: str) -> tuple[str, ...]:
+    """Subject folder names to scan for L3 prerequisite candidates of `subject`."""
+    return (subject,) + _PREREQ_SUBJECT_ALIASES.get(subject, ())
+
+
+def earlier_grades(board: str, subject: str, grade: str) -> list[tuple[str, str]]:
     """
-    Grades in this board/subject that come strictly before `grade`, in
-    _grade_sort_key order (nearest-first is NOT guaranteed or required —
-    L3 treats every earlier grade as an equally valid candidate source).
+    (source_subject, grade) pairs that come strictly before `grade`, across
+    `subject` and any of its prerequisite-alias subjects (see
+    _PREREQ_SUBJECT_ALIASES), in _grade_sort_key order (nearest-first is NOT
+    guaranteed or required — L3 treats every earlier grade as an equally
+    valid candidate source). Grade names are assumed not to collide across a
+    subject and its aliases (true for Science/Environmental Science, whose
+    grade ranges don't overlap).
     """
     target_key = _grade_sort_key(grade)
-    return [
-        g for g in list_grades_in_board_subject(board, subject)
+    pairs = [
+        (src_subject, g)
+        for src_subject in _prereq_source_subjects(subject)
+        for g in list_grades_in_board_subject(board, src_subject)
         if _grade_sort_key(g) < target_key
     ]
+    return sorted(pairs, key=lambda p: _grade_sort_key(p[1]))
 
 
 def subject_prior_grades_l1_complete(board: str, subject: str, grade: str) -> bool:
     """
-    True iff every chapter in every grade earlier than `grade` (same board+subject)
-    has L1 prerequisites mapped. False if there are no earlier grades at all — an
-    empty candidate pool is never mistaken for "ready", mirroring
-    grade_subject_l1_complete's same rule for L2.
+    True iff every chapter in every grade earlier than `grade` (same board+subject,
+    plus any prerequisite-alias subjects) has L1 prerequisites mapped. False if
+    there are no earlier grades at all — an empty candidate pool is never mistaken
+    for "ready", mirroring grade_subject_l1_complete's same rule for L2.
     """
     priors = earlier_grades(board, subject, grade)
     if not priors:
         return False
-    return all(grade_subject_l1_complete(board, subject, g) for g in priors)
+    return all(grade_subject_l1_complete(board, src_subject, g) for src_subject, g in priors)
 
 
 def load_confirmed_csvs_for_subject_prior_grades(
@@ -1060,11 +1241,12 @@ def load_confirmed_csvs_for_subject_prior_grades(
 ) -> dict[str, dict[str, list[dict]]]:
     """
     Batch-load every chapter's confirmed CSV across every grade earlier than
-    `grade` (same board+subject), keyed by grade then chapter name. No
+    `grade` (same board+subject, plus any prerequisite-alias subjects — see
+    _PREREQ_SUBJECT_ALIASES), keyed by grade then chapter name. No
     exclude_chapter is needed — the L3 target chapter lives in a later grade,
     so it can never collide with an earlier grade's chapters.
     """
     return {
-        g: load_confirmed_csvs_for_grade_subject(board, subject, g)
-        for g in earlier_grades(board, subject, grade)
+        g: load_confirmed_csvs_for_grade_subject(board, src_subject, g)
+        for src_subject, g in earlier_grades(board, subject, grade)
     }

@@ -304,8 +304,10 @@ async def kb_l3_eligible_chapters(board: str, subject: str, grade: str):
     Chapters in a board/subject/grade eligible for L3 (cross-grade) prerequisite
     mapping. Eligibility requires the target chapter's own grade+subject to have
     every chapter L1-mapped (same precondition L2 has, so the target itself has
-    L1) AND every chapter in every EARLIER grade of the same subject to already
-    have L1 prerequisites mapped — L3 needs that cross-grade candidate pool.
+    L1) AND every chapter in every EARLIER grade of the same subject — plus any
+    prerequisite-alias subject, e.g. Science pulls in Environmental Science's
+    Grades 3-5 (see kb_access._PREREQ_SUBJECT_ALIASES) — to already have L1
+    prerequisites mapped. L3 needs that cross-grade candidate pool.
     """
     chapters = kb_access.list_chapters_in_grade_subject(board, subject, grade)
     blocking = [c["chapter"] for c in chapters if not c["has_l1_prereqs"]]
@@ -759,19 +761,20 @@ async def kb_analytics_chapter(board: str, subject: str, grade: str, chapter: st
     except Exception:
         pass
 
-    # Structured run record (latest run — present for both passing and escalated
-    # chapters once they have been run under the run-record era; None for legacy
-    # chapters, in which case the frontend falls back to confirmed/escalations).
+    # Structured run records — one per pipeline stage that has actually been run
+    # (full L1 pipeline, L1-only prerequisite mapping, L2, L3), each stage's latest
+    # run. Empty for legacy chapters predating run records, in which case the
+    # frontend falls back to confirmed/escalations.
     try:
-        detail["run"] = kb_access.load_run_record(board, subject, grade, chapter)
+        detail["runs"] = kb_access.load_all_run_records_for_chapter(board, subject, grade, chapter)
     except ValueError:
-        detail["run"] = None
+        detail["runs"] = []
 
     if (
         detail["confirmed"] is None
         and not detail["escalations"]
         and detail["concept_skill_map"] is None
-        and detail.get("run") is None
+        and not detail["runs"]
     ):
         raise HTTPException(status_code=404, detail="No analytics found for chapter")
 
@@ -780,10 +783,13 @@ async def kb_analytics_chapter(board: str, subject: str, grade: str, chapter: st
 
 @app.get("/kb/analytics/chapter/run/file")
 async def kb_analytics_chapter_run_file(
-    board: str, subject: str, grade: str, chapter: str, filename: str
+    board: str, subject: str, grade: str, chapter: str, filename: str,
+    mode: str | None = None,
 ):
     """
-    Serve one sibling artifact (a CSV / prompt / report) from a chapter's run/ folder.
+    Serve one sibling artifact (a CSV / prompt / report) from one pipeline stage's
+    run/{stage}/ folder — ``mode`` picks the stage (see run.json's own ``mode``
+    field returned by /kb/analytics/chapter; defaults to the full L1 pipeline).
 
     ``filename`` must be a bare name taken from run.json's ``*_file`` pointers; it is
     validated against a strict whitelist in kb_access.load_run_artifact before it ever
@@ -791,7 +797,7 @@ async def kb_analytics_chapter_run_file(
     preview, mirroring how the confirmed CSV is returned by /kb/analytics/chapter.
     """
     try:
-        csv_text = kb_access.load_run_artifact(board, subject, grade, chapter, filename)
+        csv_text = kb_access.load_run_artifact(board, subject, grade, chapter, filename, mode)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError:

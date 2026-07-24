@@ -522,8 +522,10 @@ export interface ChapterAnalytics {
     concepts: string[];
     skills: string[];
   } | null;
-  // Latest structured run; null for legacy chapters predating run records.
-  run: ChapterRunRecord | null;
+  // One entry per pipeline stage that has actually been run (full L1 pipeline,
+  // L1-only prerequisite mapping, L2, L3) — each stage's own latest run, never
+  // overwritten by another stage. Empty for legacy chapters predating run records.
+  runs: ChapterRunRecord[];
 }
 
 export interface StartRunOptions extends RunFormValues {

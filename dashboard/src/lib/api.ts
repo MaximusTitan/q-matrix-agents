@@ -187,9 +187,11 @@ export async function fetchRunCsv(
   subject: string,
   grade: string,
   chapter: string,
-  file: string
+  file: string,
+  mode?: string
 ): Promise<string> {
   const params = new URLSearchParams({ board, subject, grade, chapter, filename: file });
+  if (mode) params.set("mode", mode);
   const res = await fetch(`${API_BASE}/kb/analytics/chapter/run/file?${params}`);
   if (!res.ok) {
     throw new Error(`Failed to fetch run CSV ${file}: ${res.status}`);
