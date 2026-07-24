@@ -35,6 +35,15 @@ export interface SelectedChapter {
   chapter: string;
 }
 
+// Maps ChapterRunRecord.mode -> a human label for the run card's header. Falls
+// back to the raw mode string for any value not listed here.
+const RUN_MODE_LABELS: Record<string, string> = {
+  full: "Run Insights",
+  prerequisite_only: "L1 Prerequisite Mapping",
+  l2_prerequisite_only: "L2 Prerequisite Mapping",
+  l3_prerequisite_only: "L3 Prerequisite Mapping",
+};
+
 interface AnalyticsPanelProps {
   data: AnalyticsResponse | null;
   loading: boolean;
@@ -847,7 +856,7 @@ function RunInsightsCard({
 }) {
   const [showRationale, setShowRationale] = useState(false);
   const loadCsv = (file: string) =>
-    fetchRunCsv(selected.board, selected.subject, selected.grade, selected.chapter, file);
+    fetchRunCsv(selected.board, selected.subject, selected.grade, selected.chapter, file, run.mode);
 
   const passed = run.final_status === "passed";
   const accent = passed ? "var(--qm-green)" : "var(--qm-red)";
@@ -856,7 +865,7 @@ function RunInsightsCard({
     <div className="rounded-lg border bg-card" style={{ borderColor: `color-mix(in srgb, ${accent} 40%, transparent)` }}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border px-4 py-3 text-[11px]">
         <span className="font-bold" style={{ color: accent }}>
-          Run Insights — {passed ? "Passed" : "Escalated"}
+          {RUN_MODE_LABELS[run.mode] ?? run.mode} — {passed ? "Passed" : "Escalated"}
         </span>
         <span className="text-muted-foreground">{run.date}</span>
         <span>
@@ -1027,14 +1036,18 @@ function DetailView({
               <ConfirmedCard detail={detail.confirmed} chapter={selected.chapter} />
             )}
             {/* Structured run insights (every CSV + checks + doctor trail) for both
-                passing and escalated chapters once a run.json exists. */}
-            {detail.run && <RunInsightsCard run={detail.run} selected={selected} />}
+                passing and escalated chapters — one card per pipeline stage that has
+                actually been run (full L1 pipeline, L1-only, L2, L3), each stage's
+                own latest run, never overwritten by another stage. */}
+            {detail.runs.map((run) => (
+              <RunInsightsCard key={run.run_id} run={run} selected={selected} />
+            ))}
             {/* Legacy escalation view only for chapters predating run records. */}
-            {!detail.run &&
+            {detail.runs.length === 0 &&
               detail.escalations.map((r) => (
                 <EscalationCard key={r.folder} report={r} />
               ))}
-            {!detail.confirmed && !detail.run && !detail.escalations.length && (
+            {!detail.confirmed && detail.runs.length === 0 && !detail.escalations.length && (
               <div className="text-[11px] text-muted-foreground">
                 No confirmed CSV or escalation on record — reached concept-skill-map
                 extraction only.

@@ -4,10 +4,13 @@ agents/prerequisite_l3.py
 Prerequisite Agent — Level 3 (cross-grade, same subject).
 
 Runs after every chapter in every grade EARLIER than the target's grade (same
-board+subject) has Level-1 prerequisites mapped
-(skills.kb_access.subject_prior_grades_l1_complete). Given one TARGET chapter's
-confirmed CSV plus a candidate pool of concepts/skills from chapters in earlier
-grades of the same subject — already narrowed down to just the (grade, chapter)
+board+subject, plus any prerequisite-alias subject — e.g. Science pulls in
+Environmental Science's Grades 3-5, since CBSE only introduces Science as a
+standalone subject from Grade 6; see skills.kb_access._PREREQ_SUBJECT_ALIASES)
+has Level-1 prerequisites mapped (skills.kb_access.subject_prior_grades_l1_complete).
+Given one TARGET chapter's confirmed CSV plus a candidate pool of concepts/skills
+from chapters in earlier grades of the same subject (or alias subject) — already
+narrowed down to just the (grade, chapter)
 pairs agents.chapter_relevance.screen flagged as plausibly related, screened once
 per earlier grade so each screening call stays the same size as an L2 call
 regardless of how many prior grades exist — it asks the LLM which candidate items
