@@ -1,5 +1,8 @@
 # Environment
 .env
+.env.*
+!.env.example
+.venv/
 venv/
 __pycache__/
 *.pyc
@@ -7,15 +10,27 @@ __pycache__/
 *.pyd
 .Python
 
-# Google Auth — never commit these
+# Secrets / keys — never commit these
 credentials.json
 token.json
+service-account*.json
+*.pem
+*.key
+*.p12
 
 # OS
 .DS_Store
+**/.DS_Store
 Thumbs.db
 
 # Next.js dashboard
+node_modules/
 dashboard/node_modules/
 dashboard/.next/
 dashboard/.env.local
+!dashboard/.env.local.example
+*.tsbuildinfo
+
+# Tooling output — machine-specific, regenerable, do not commit
+graphify-out/
+.graphify_detect.json
