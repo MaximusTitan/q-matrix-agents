@@ -341,6 +341,57 @@ escalations/{board}/{subject}/{grade}/{chapter}/{date}/
 
 ---
 
+## Knowledge Graph Export
+
+Once a corpus has prerequisites mapped, `scripts/export_graph.py` turns the 223 per-chapter
+CSVs into a concept-level knowledge graph as three static JSON files:
+
+```bash
+python scripts/export_graph.py --out ../q-matrix-graph/public/graph --check
+```
+
+| File | Contents |
+|---|---|
+| `graph-core.json` | nodes and links — everything needed to draw the graph |
+| `concept-details.json` | per-concept skills and prerequisite rationales, loaded on demand |
+| `meta.json` | provenance, subject/grade inventory, and the integrity report |
+
+The exporter is read-only and additive: it never writes to the KB. It resolves every
+prerequisite reference — free-text names scoped by `(grade, chapter)`, with no IDs anywhere
+in the KB — and mints a stable `sha1(subject|grade|chapter|concept)[:12]` id per concept.
+`--check` exits non-zero if any reference fails to resolve, which makes it usable as a CI
+guard on KB edits.
+
+Three things it handles that a naive CSV reader will get wrong:
+
+- **L1 cells hold two shapes.** Mostly bare strings, but ~1,765 entries are
+  `{"item", "reason"}` objects. A string-only parser drops them silently.
+- **Identity comes from the directory path, never the `chapter` column.** Two Maths Grade 4
+  files still carry pre-rename chapter names; trusting the column orphans their inbound edges.
+- **`run/` subdirectories are skipped.** They hold per-stage snapshots of the same chapters.
+
+Current output — printed on every run and written to `meta.json`:
+
+```
+223 chapter files -> 7145 rows
+3769 concept nodes, 7448 directed edges
+  by level: {'L1': 4272, 'L2': 612, 'L3': 2564}
+  derived: 1442  cross-subject: 156  cross-grade: 2564
+  isolated nodes: 214  cyclic components: 88 (210 nodes, largest 7)
+  unresolved refs: 0  self-loops: 0
+```
+
+Edge direction is **source = prerequisite, target = dependent**, so arrows point forward in
+learning order. This inverts the CSV, where a row lists what it depends on.
+
+`graph-core.json` deliberately carries no timestamp, so re-exporting an unchanged KB is
+byte-identical and produces no diff.
+
+The graph is rendered by **[q-matrix-graph](https://github.com/MaximusTitan/q-matrix-graph)**,
+a standalone static site. See its README for the viewer.
+
+---
+
 ## Live Dashboard
 
 The pipeline dashboard is a Next.js app in [`dashboard/`](dashboard/) that streams live events from the FastAPI backend via SSE.
@@ -407,3 +458,4 @@ Open **http://localhost:3000**. The dashboard calls the FastAPI backend cross-or
 ## Related
 
 - **[q-matrix-kb-template](https://github.com/MaximusTitan/q-matrix-kb-template)** — Knowledge base template (the data layer); structure only, you supply the curriculum material
+- **q-matrix-graph** — standalone 3D viewer for the exported knowledge graph; consumes the JSON written by `scripts/export_graph.py`
