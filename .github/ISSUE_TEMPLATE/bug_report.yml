@@ -1,0 +1,150 @@
+name: Bug report
+description: Something in the orchestrator, an agent, a skill, the API, or the dashboard behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not use this form for security vulnerabilities — see [SECURITY.md](../blob/main/SECURITY.md)
+        and email the maintainer instead.
+
+        Do not paste API keys or copyrighted curriculum text. Describe the chapter by its
+        identifiers; do not reproduce textbook content.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The observed behavior. Include the exact error, exception, or wrong output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Include the exact invocation — the full `python orchestrator.py ...` command line,
+        or the API request (method, path, JSON body). Redact your KB path if it contains
+        anything sensitive.
+      placeholder: |
+        1. python orchestrator.py --board CBSE --subject Science --grade "Grade 8" --chapter Chapter03
+        2. ...
+
+        or
+
+        POST http://localhost:8000/run
+        {"board": "CBSE", "subject": "Science", "grade": "Grade 8", "chapter": "Chapter03", "models": {...}}
+    validations:
+      required: true
+
+  - type: input
+    id: target
+    attributes:
+      label: Board / Subject / Grade / Chapter
+      description: >-
+        The identifiers involved. Grade folders are `Grade` + space + number, e.g. `Grade 8`.
+      placeholder: "CBSE / Science / Grade 8 / Chapter03"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Which stage
+      options:
+        - Stage 1 (Map Extraction / Generator / Eval / Revision / Doctor / Judge)
+        - Prerequisites L1 (within-chapter)
+        - Chapter Relevance / Prerequisites L2 (cross-chapter)
+        - Prerequisites L3 (cross-grade)
+        - FastAPI backend (api.py)
+        - Dashboard (Next.js)
+        - Skills / KB access / git sync
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: models
+    attributes:
+      label: Models used
+      description: The agent→model mapping, if you overrode the defaults.
+      placeholder: "defaults, or: generator=anthropic/claude-sonnet-5, eval=openai/gpt-5.4-mini"
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.12.4 (output of `python --version`)"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "macOS 15.5 / Ubuntu 24.04 / Windows 11"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kb-root
+    attributes:
+      label: Is KB_ROOT set, and to what kind of KB?
+      options:
+        - Set — a fully populated KB (textbooks, curriculum-docs, rulesets, existing runs)
+        - Set — a partially populated KB (some chapters/PDFs missing)
+        - Set — a fresh clone of the KB template, essentially empty
+        - Not set
+    validations:
+      required: true
+
+  - type: input
+    id: run-id
+    attributes:
+      label: run_id
+      description: From the CLI output, the dashboard, or `GET /runs`.
+
+  - type: input
+    id: report-path
+    attributes:
+      label: Run / escalation report path
+      description: >-
+        Path inside the KB, relative to KB_ROOT — e.g.
+        `textbooks/{board}/{subject}/{grade}/{chapter}/run/report.md` or
+        `escalations/{board}/{subject}/{grade}/{chapter}/{date}/`.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / traceback
+      description: Terminal output, uvicorn log, or browser console. Trim to the relevant part.
+      render: text
+
+  - type: textarea
+    id: run-json
+    attributes:
+      label: Relevant run.json excerpt
+      description: >-
+        Optional but very useful — `total_cost_usd`, `total_usage`, and the failing
+        attempt's `check1` / `check2` blocks.
+      render: json
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Before submitting
+      options:
+        - label: This report contains no API keys, tokens, or `.env` contents.
+          required: true
+        - label: This report contains no copyrighted curriculum or textbook text — only identifiers.
+          required: true
+        - label: This is not a security vulnerability (those go to the email in SECURITY.md).
+          required: true

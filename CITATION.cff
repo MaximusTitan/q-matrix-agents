@@ -1,0 +1,55 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "Q-Matrix: A Multi-Agent System for Automated Curriculum Concept-Skill Mapping"
+abstract: >-
+  Q-Matrix is a multi-agent system that turns raw curriculum documentation into
+  validated, prerequisite-mapped curriculum CSVs. A thin orchestrator coordinates
+  eleven single-responsibility LLM agents — extraction, generation, evaluation,
+  revision, surgical repair, selection, and multi-level prerequisite mapping —
+  with a human in the loop only on escalation. This repository is the code layer;
+  curriculum data lives in a separate knowledge-base repository.
+authors:
+  - family-names: Tamboli
+    given-names: Shrideep
+    email: shrideep@prosoftpeople.com
+    affiliation: Intelliana
+repository-code: "https://github.com/MaximusTitan/q-matrix-agents"
+license: Apache-2.0
+version: 0.1.0
+date-released: "2026-07-24"
+keywords:
+  - curriculum-mapping
+  - multi-agent-systems
+  - large-language-models
+  - education-technology
+  - knowledge-graph
+  - prerequisite-relations
+
+# ─── TODO (maintainer) ────────────────────────────────────────────────────────
+# There is an associated PAPER. Its bibliographic details are NOT filled in here
+# because they were not available when this file was written, and fabricating a
+# title, venue, DOI, or year would be worse than omitting them.
+#
+# Maintainer: fill in the real values and uncomment the block below. Once
+# `preferred-citation` is present, citation tools will prefer the paper over the
+# software entry above. Delete any field you do not have rather than guessing.
+#
+# preferred-citation:
+#   type: article            # or: conference-paper / report / thesis
+#   title: "<exact paper title>"
+#   authors:
+#     - family-names: Tamboli
+#       given-names: Shrideep
+#       email: shrideep@prosoftpeople.com
+#       affiliation: Intelliana
+#   year: <YYYY>
+#   journal: "<journal name>"           # articles
+#   collection-title: "<proceedings>"   # conference papers
+#   volume: <n>
+#   issue: <n>
+#   start: <first page>
+#   end: <last page>
+#   doi: "<10.xxxx/xxxxx>"
+#   url: "<canonical URL>"
+# ──────────────────────────────────────────────────────────────────────────────

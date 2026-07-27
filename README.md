@@ -1,10 +1,14 @@
 # q-matrix-agents
 
-> Orchestrator, agents, and skills for the Q-Matrix curriculum generation system — part of [AI Ready School](https://github.com/MaximusTitan/q-matrix-kb) by Intelliana.
+> Orchestrator, agents, and skills for the Q-Matrix curriculum generation system — part of AI Ready School by Intelliana.
 
-This repository is the **code layer** of the Q-Matrix system. It contains the orchestrator, ten LLM-powered agents, a FastAPI backend, a live Next.js dashboard, and the skill modules that read from and write to the knowledge base.
+This repository is the **code layer** of the Q-Matrix system. It contains the orchestrator, eleven LLM-powered agents, a FastAPI backend, a live Next.js dashboard, and the skill modules that read from and write to the knowledge base.
+
+Licensed under **[Apache 2.0](LICENSE)**. See **[CONTRIBUTING.md](CONTRIBUTING.md)**, **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)**, and **[SECURITY.md](SECURITY.md)**.
 
 > For the full system design (control-flow diagrams, KB layout, model routing, runtime topology) see **[ARCHITECTURE.md](ARCHITECTURE.md)** — this README is a quick-start overview.
+>
+> New here? **[docs/SETUP.md](docs/SETUP.md)** is the zero-to-running guide; **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** covers common failures.
 
 ---
 
@@ -13,8 +17,11 @@ This repository is the **code layer** of the Q-Matrix system. It contains the or
 Given curriculum documentation from any education board, Q-Matrix produces a validated curriculum CSV that maps:
 
 ```
-Board → Subject → Grade → Chapter → Concept → Skill   (+ L1 and L2 prerequisite columns)
+Board → Subject → Grade → Chapter → Concept → Skill   (+ L1/L2/L3 prerequisite columns)
 ```
+
+The six base columns are always present. Each prerequisite level appends two more
+(`prereq_concepts_L{n}_*`, `prereq_skills_L{n}_*`) when that level has been run.
 
 This is a multi-agent system. Specialized agents — each with their own skills, prompt, and responsibilities — coordinate through a thin orchestrator to generate, evaluate, repair, and enrich curriculum CSVs automatically, with a human in the loop only on escalation.
 
@@ -26,7 +33,8 @@ This is a multi-agent system. Specialized agents — each with their own skills,
 orchestrator.py              ← Thin coordinator. No LLM calls. Pure control flow.
 api.py                       ← FastAPI backend (:8000) — SSE streaming, analytics
 │
-├── agents/                  ← 10 single-responsibility LLM agents (see roster below)
+├── agents/                  ← 11 single-responsibility LLM agents (see roster below)
+├── prompts/                 ← one system prompt per agent (11 files)
 │
 ├── skills/
 │   ├── file_io.py           ← read_file, write_file, file_exists, create_directory
@@ -40,14 +48,17 @@ api.py                       ← FastAPI backend (:8000) — SSE streaming, anal
 │   ├── report_render.py     ← renders human-readable report.md
 │   └── model_stats.py       ← aggregates run records for the analytics dashboard
 │
-└── dashboard/                ← Next.js live console + analytics (:3000)
+├── utils/events.py          ← in-process pub/sub bus behind the SSE stream
+├── tests/                   ← executable assert scripts (see "Tests" below)
+├── scripts/                 ← sync_textbooks_from_drive.py (Google Drive → KB)
+└── dashboard/               ← Next.js live console + analytics (:3000)
 ```
 
 ---
 
 ## Agent Roster
 
-Ten agents, each loading its system prompt from `prompts/<name>_prompt.md`. Full responsibilities, I/O shapes, and the flowchart of how they connect are in **[ARCHITECTURE.md §4](ARCHITECTURE.md#4-the-agent-roster)**.
+Eleven agents, each loading its system prompt from `prompts/<name>_prompt.md`. Full responsibilities, I/O shapes, and the flowchart of how they connect are in **[ARCHITECTURE.md §4](ARCHITECTURE.md#4-the-agent-roster)**.
 
 | Agent | Responsibility |
 |---|---|
@@ -61,17 +72,47 @@ Ten agents, each loading its system prompt from `prompts/<name>_prompt.md`. Full
 | **Prerequisites (L1)** | Map within-chapter concept→concept and skill→skill prerequisite edges |
 | **Chapter Relevance** | Cheap, recall-biased pre-filter that flags sibling chapters worth the full L2 pass |
 | **Prerequisite (L2)** | Map cross-chapter (same grade+subject) prerequisite edges, using the relevance-screened candidate pool |
+| **Prerequisite (L3)** | Map cross-grade (same subject) prerequisite edges — target chapter ← chapters in earlier grades, screened once per earlier grade |
+
+Chapter Relevance has no model key of its own: the screen runs on whichever model the
+L2 or L3 run is using (`orchestrator.AGENT_KEYS` covers ten keys — `map_extraction`,
+`generator`, `eval`, `doctor`, `rules_doctor`, `revision`, `judge`, `prerequisite`,
+`prerequisite_l2`, `prerequisite_l3`).
+
+### Prerequisite levels
+
+| Level | Scope | Columns added | Precondition |
+|---|---|---|---|
+| L1 | Within one chapter | `prereq_concepts_L1_same_chapter`, `prereq_skills_L1_same_chapter` | Runs inline at the end of every full pipeline run |
+| L2 | Cross-chapter, same grade + subject | `prereq_concepts_L2_cross_chapter`, `prereq_skills_L2_cross_chapter` | **Every** chapter in the grade+subject already has L1 edges |
+| L3 | Cross-grade, same subject | `prereq_concepts_L3_prior_grade`, `prereq_skills_L3_prior_grade` | Every chapter in **every earlier grade** of the subject already has L1 edges (plus the L2 precondition on the target's own grade) |
+
+L3 edges are written only onto the target (downstream) chapter's CSV — earlier-grade
+chapters are read-only inputs. Each L3 cell holds `{"grade", "chapter",
+"concept"|"skill", "reason"}` entries; `grade` is carried because chapter names are not
+unique across grades.
+
+Two L3 specifics worth knowing:
+
+- **Subject aliasing.** For L3 only, `skills/kb_access.py:_PREREQ_SUBJECT_ALIASES` maps
+  `Science → ("Environmental Science",)`, so an L3 run for Science also scans
+  Environmental Science grades. CBSE only introduces Science as a standalone subject
+  from Grade 6; Grades 3–5 cover the same ground as EVS. L1 and L2 stay exact-match on
+  subject.
+- **Deliberate omission.** L3 does not assert long-assumed foundational dependencies
+  ("uses basic arithmetic") even when technically true — a guardrail in
+  `prompts/prerequisite_l3_prompt.md`, not a code filter.
 
 ---
 
 ## Orchestration Flow
 
-The core generate → evaluate → repair/revise loop (bounded, adaptive). Cross-chapter (L2) prerequisite mapping runs separately, after every chapter in a grade+subject has L1 prerequisites. See **[ARCHITECTURE.md §5](ARCHITECTURE.md#5-the-pipeline-control-flow)** for the full flowchart including Doctor/Judge/escalation paths.
+The core generate → evaluate → repair/revise loop (bounded, adaptive). L2 (cross-chapter) and L3 (cross-grade) prerequisite mapping run as separate passes once their preconditions are met. See **[ARCHITECTURE.md §5](ARCHITECTURE.md#5-the-pipeline-control-flow)** for the full flowchart including Doctor/Judge/escalation paths.
 
 ```
 START: Board · Subject · Grade · Chapter
   |
-  ├── git pull KB
+  ├── git pull KB                                    (CLI only — see "KB sync" below)
   ├── concept-skill-map missing?
   │     YES → Map Extraction Agent + Generator Agent run in PARALLEL
   │     NO  → Generator Agent only
@@ -84,32 +125,55 @@ START: Board · Subject · Grade · Chapter
   |
   ├── ≥2 passing candidates → Judge picks the best; 1 candidate → use it
   ├── Prerequisites (L1): add within-chapter prereq edges
-  └── Save confirmed CSV + run record, git push
+  └── Save confirmed CSV + run record, git push      (push: CLI only)
+
+LATER, as separate runs (API/dashboard only — no CLI flags):
+  L2: every chapter in the grade+subject has L1  → Chapter Relevance screen → Prerequisite L2
+  L3: every chapter in every EARLIER grade of the subject has L1
+                                                → Chapter Relevance screen, once per
+                                                  earlier grade → Prerequisite L3
 ```
 
 ---
 
-## Cold Start Logic
+## Prompt Resolution & Cold Start
 
-Base prompts are never manually written. They emerge from the system:
+`skills/kb_access.py:load_prompt` resolves the generation prompt in a fixed order and
+returns which level it came from:
 
-1. No prompt exists → Generator runs with `universal_rules.md`
-2. If both checks pass → `universal_rules.md` is saved as `base_prompt.md`
-3. If either check fails → Revision Agent adapts it into `base_prompt.md`
-4. If `base_prompt.md` works for most grades but fails one specific grade → Revision Agent writes a `grade/prompt.md` for that grade only, leaving `base_prompt.md` unchanged
+1. `prompt-library/{board}/{subject}/{grade}/prompt.md` → `grade_prompt`
+2. `prompt-library/{board}/{subject}/base_prompt.md` → `base_prompt`
+3. `rulesets/universal_rules.md` → `cold_start` (raises if this file is missing)
 
-The only manually authored input is `universal_rules.md`.
+`universal_rules.md` is the only manually authored input, and the only file the cold-start
+path needs.
+
+**Revised prompts are ephemeral — the pipeline never writes to the prompt library.** When
+Eval fails, the Revision Agent's rewritten prompt is threaded through the rest of the run
+in memory only (`working_prompt` in `orchestrator.py`, `prompt_override` on the Generator).
+Commit `84151f7` removed every `save_prompt` call from the pipeline to stop cross-chapter
+prompt contamination and batch races; the prompt library is read-only during a run.
+`skills/kb_access.py:save_prompt` still exists but its only remaining caller in the repo is
+`tests/test_revision_loop.py`.
+
+Practical consequence: unless you author `base_prompt.md` or a `{grade}/prompt.md`
+yourself, **every run starts from `universal_rules.md`** and learns nothing across runs
+about generation prompts. Persistent learning happens only through the rejection path,
+which writes grade `rules.md` (see Human-in-the-Loop).
 
 ---
 
 ## Setup
 
+Full walkthrough: **[docs/SETUP.md](docs/SETUP.md)**. Stuck? **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)**.
+
 ### Prerequisites
 
 - Python 3.10+
+- Node.js — required for the dashboard (Next.js 16.2.7; `dashboard/package.json` declares no `engines` field, see [docs/SETUP.md](docs/SETUP.md) for the version this is tested against)
 - Git with Git LFS
 - A [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) API key (routes to Anthropic, OpenAI, Google, etc. from one client)
-- A local clone of [q-matrix-kb](https://github.com/MaximusTitan/q-matrix-kb)
+- A local clone of the KB template, **[q-matrix-kb-template](https://github.com/MaximusTitan/q-matrix-kb-template)** — it ships the directory structure only, with no curriculum content. You supply your own curriculum documentation and textbook PDFs, and you are responsible for having the rights to use them.
 
 ### Installation
 
@@ -128,37 +192,118 @@ cp .env.example .env
 ```
 
 ```env
-KB_ROOT=D:\path\to\your\clone\of\q-matrix-kb
+KB_ROOT=/path/to/your/clone/of/q-matrix-kb-template
 AI_GATEWAY_API_KEY=...
 ```
 
-`KB_ROOT` is the local path to wherever you cloned `q-matrix-kb`. Every person on the team sets their own path here. Never commit `.env`.
+`KB_ROOT` is the local path to wherever you cloned your KB. Every person sets their own path here. Never commit `.env`.
+
+### Naming convention (matters)
+
+KB lookups are **exact string matches on folder names** — there is no normalization or
+fuzzy matching. Use the same names the KB template uses:
+
+| Argument | Convention | Example |
+|---|---|---|
+| `--board` | Board folder name | `CBSE` |
+| `--subject` | Subject folder name | `Science` |
+| `--grade` | `Grade` + space + number | `"Grade 8"` (quote it — it contains a space) |
+| `--chapter` | Chapter folder name verbatim | `"Chapter04_Exploring_Forces"` |
+
+`--grade Grade8` will silently find nothing.
 
 ---
 
 ## Running the Pipeline
 
+### How each stage is invoked
+
+Not every stage has a CLI. `orchestrator.py`'s argparse exposes exactly these flags:
+`--board --subject --grade --chapter --human-feedback --reject --reason --re-extract
+--map-guidance --prereq-csv --no-sync`. **There are no `--l2` / `--l3` flags.**
+
+| Stage | CLI | API endpoint | Entry function |
+|---|---|---|---|
+| Full pipeline (incl. L1) | ✅ `python orchestrator.py …` | `POST /run` | `run_pipeline` |
+| L1 prereqs only, from a CSV file | ✅ `--prereq-csv path.csv` | `POST /run-prerequisite-only` | `run_prerequisite_only` |
+| L2 (cross-chapter) | ❌ none | `POST /run-l2-prerequisite` | `run_l2_prerequisite_only` |
+| L3 (cross-grade) | ❌ none | `POST /run-l3-prerequisite` | `run_l3_prerequisite_only` |
+| Reject + encode rule | ✅ `--reject --reason "…"` | `POST /reject` | `handle_reject` |
+| Re-extract concept-skill-map | ✅ `--re-extract --map-guidance "…"` | `POST /re-extract` | `handle_re_extract` |
+
+So in practice L2 and L3 are run **from the dashboard**, or by POSTing to the API yourself.
+Both entry functions are importable from `orchestrator` if you'd rather script them.
+Eligibility can be checked first via `GET /kb/l2-eligible-chapters` and
+`GET /kb/l3-eligible-chapters`; both run endpoints also re-check and return HTTP 400 if the
+precondition isn't met.
+
 **Normal run:**
 ```bash
-python orchestrator.py --board CBSE --subject Science --grade Grade8 --chapter Chapter3
+python orchestrator.py --board CBSE --subject Science --grade "Grade 8" --chapter "Chapter04_Exploring_Forces"
 ```
 
 **Resume after escalation with human feedback:**
 ```bash
-python orchestrator.py --board CBSE --subject Science --grade Grade8 --chapter Chapter3 --human-feedback "Add pressure as a concept with max 3 skills"
+python orchestrator.py --board CBSE --subject Science --grade "Grade 8" --chapter "Chapter04_Exploring_Forces" --human-feedback "Add pressure as a concept with max 3 skills"
 ```
 
 **Reject a passed CSV and encode a new rule:**
 ```bash
-python orchestrator.py --reject --board CBSE --subject Science --grade Grade8 --chapter Chapter3 --reason "Max 3 skills per concept"
+python orchestrator.py --reject --board CBSE --subject Science --grade "Grade 8" --chapter "Chapter04_Exploring_Forces" --reason "Max 3 skills per concept"
 ```
 
 **Re-extract the concept-skill-map with guidance, then re-run:**
 ```bash
-python orchestrator.py --re-extract --board CBSE --subject Science --grade Grade8 --chapter Chapter3 --map-guidance "Split 'Motion' and 'Force' into separate concepts"
+python orchestrator.py --re-extract --board CBSE --subject Science --grade "Grade 8" --chapter "Chapter04_Exploring_Forces" --map-guidance "Split 'Motion' and 'Force' into separate concepts"
 ```
 
-The orchestrator pulls the latest KB state at the start of every run and pushes any new files back to remote on completion (pass `--no-sync` to skip both).
+### KB sync — CLI only
+
+`pull_kb()` and `push_kb()` are called from `orchestrator.main()` and nowhere else.
+`run_pipeline` itself never touches git. Consequences:
+
+- **CLI runs** pull the KB before the run and push after it (pass `--no-sync` to skip both).
+  The `--prereq-csv` path returns before either, so it never syncs.
+- **Dashboard / API runs never pull or push.** Files are written to your local `KB_ROOT` and
+  stay there until you commit and push them yourself. The `no_sync` field on the API request
+  models defaults to `True` and is not forwarded to the orchestrator at all, so setting it
+  to `False` changes nothing; `dashboard/src/lib/api.ts` hardcodes `no_sync: true` on every
+  POST regardless.
+
+If you run from the dashboard, treat committing the KB as a manual step.
+
+---
+
+## Cost
+
+Measured from 685 recorded run records (`total_cost_usd` in `run.json`), at the default
+model routing:
+
+| Stage | Median | Notes |
+|---|---|---|
+| Full pipeline (generate → eval → repair → L1) | **$0.32** | mean $0.45 · p90 $0.96 · max $1.64 |
+| L2 (cross-chapter) | **$0.11** | |
+| L3 (cross-grade) | **$0.39** | scales with how many earlier grades exist |
+| All three stages for one chapter | **≈ $0.82** | sum of medians |
+
+Costs come straight from the Gateway's per-call `cost` field, so they track whatever models
+you route to. See **[docs/SETUP.md](docs/SETUP.md)** for cost control and model-selection guidance.
+
+---
+
+## Tests
+
+`tests/` holds **executable scripts, not a pytest suite** — there are no `def test_*`
+functions and `pytest` is not a dependency. Run them individually:
+
+```bash
+python tests/test_skills.py
+python tests/test_prerequisite_l3.py
+```
+
+Most load `.env` and hit the real KB and/or the real Gateway, so they need a populated
+`.env` and will cost money. `tests/test_prerequisite_l3.py` is the exception — it stubs the
+LLM and runs offline.
 
 ---
 
@@ -168,7 +313,7 @@ There are two moments where a human intervenes:
 
 **Moment 1 — Eval loop exhausted (attempt budget spent or gains plateaued)**
 
-The orchestrator writes an escalation report to `q-matrix-kb/escalations/` and prints a terminal message. The human reads the report, then re-runs with `--human-feedback`. The feedback is injected into the Revision Agent as additional context for one final cycle.
+The orchestrator writes an escalation report to `$KB_ROOT/escalations/` and prints a terminal message. The human reads the report, then re-runs with `--human-feedback`. The feedback is injected into the Revision Agent as additional context for one final cycle.
 
 **Moment 2 — Human rejects a passed CSV**
 
@@ -180,13 +325,90 @@ The human never edits prompts or agent code directly. All feedback enters the sy
 
 ## Knowledge Base
 
-This repo never writes to itself. All outputs (prompts, concept-skill-maps, CSVs) go to the KB repo at `KB_ROOT`. See [q-matrix-kb](https://github.com/MaximusTitan/q-matrix-kb) for the KB structure and schema.
+This repo never writes to itself. All outputs (concept-skill-maps, CSVs, run records, escalations) go to the KB repo at `KB_ROOT`. See **[q-matrix-kb-template](https://github.com/MaximusTitan/q-matrix-kb-template)** for the structure and schema — it ships empty. You populate `curriculum-docs/` and `textbooks/` with material you have the right to use, seed `rulesets/universal_rules.md`, and point `KB_ROOT` at your clone.
+
+Directories the code expects under `KB_ROOT` (all resolved in `skills/kb_access.py`):
+
+```
+curriculum-docs/{board}/{subject}/{grade}/
+textbooks/{board}/{subject}/{grade}/{chapter}/     ← chapter.pdf, concept-skill-map.json,
+                                                      confirmed_curriculum.csv, run/{full,l1_prereq,l2,l3}/
+prompt-library/{board}/{subject}/                  ← base_prompt.md, {grade}/prompt.md
+rulesets/                                          ← universal_rules.md, {board}/{subject}/{grade}/rules.md
+run_history/{board}/{subject}/{grade}/{chapter}/   ← archived run records, one JSON per run_id
+escalations/{board}/{subject}/{grade}/{chapter}/{date}/
+```
+
+---
+
+## Knowledge Graph Export
+
+Once a corpus has prerequisites mapped, `scripts/export_graph.py` turns the 223 per-chapter
+CSVs into a concept-level knowledge graph as three static JSON files:
+
+```bash
+python scripts/export_graph.py --out ../q-matrix-graph/public/graph --check
+```
+
+| File | Contents |
+|---|---|
+| `graph-core.json` | nodes and links — everything needed to draw the graph |
+| `concept-details.json` | per-concept skills and prerequisite rationales, loaded on demand |
+| `meta.json` | provenance, subject/grade inventory, and the integrity report |
+
+The exporter is read-only and additive: it never writes to the KB. It resolves every
+prerequisite reference — free-text names scoped by `(grade, chapter)`, with no IDs anywhere
+in the KB — and mints a stable `sha1(subject|grade|chapter|concept)[:12]` id per concept.
+`--check` exits non-zero if any reference fails to resolve, which makes it usable as a CI
+guard on KB edits.
+
+Three things it handles that a naive CSV reader will get wrong:
+
+- **L1 cells hold two shapes.** Mostly bare strings, but ~1,765 entries are
+  `{"item", "reason"}` objects. A string-only parser drops them silently.
+- **Identity comes from the directory path, never the `chapter` column.** Two Maths Grade 4
+  files still carry pre-rename chapter names; trusting the column orphans their inbound edges.
+- **`run/` subdirectories are skipped.** They hold per-stage snapshots of the same chapters.
+
+Current output — printed on every run and written to `meta.json`:
+
+```
+223 chapter files -> 7145 rows
+3769 concept nodes, 7448 directed edges
+  by level: {'L1': 4272, 'L2': 612, 'L3': 2564}
+  derived: 1442  cross-subject: 156  cross-grade: 2564
+  isolated nodes: 214  cyclic components: 88 (210 nodes, largest 7)
+  unresolved refs: 0  self-loops: 0
+```
+
+Edge direction is **source = prerequisite, target = dependent**, so arrows point forward in
+learning order. This inverts the CSV, where a row lists what it depends on.
+
+`graph-core.json` deliberately carries no timestamp, so re-exporting an unchanged KB is
+byte-identical and produces no diff.
+
+The graph is rendered by **[q-matrix-graph](https://github.com/MaximusTitan/q-matrix-graph)**,
+a standalone static site. See its README for the viewer.
 
 ---
 
 ## Live Dashboard
 
 The pipeline dashboard is a Next.js app in [`dashboard/`](dashboard/) that streams live events from the FastAPI backend via SSE.
+
+First-time setup — the dashboard needs its own dependencies and its own env file:
+
+```bash
+cd dashboard
+npm install
+cp .env.local.example .env.local     # sets NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+`NEXT_PUBLIC_API_URL` is not optional in practice: `dashboard/src/lib/api.ts` falls back to
+`""` (relative paths) when it is unset, so requests hit the Next server instead of FastAPI
+and the UI comes up empty with no error.
+
+Then, in two terminals:
 
 ```bash
 # Terminal 1 — API backend
@@ -198,8 +420,21 @@ cd dashboard && npm run dev
 
 Open **http://localhost:3000**. The dashboard calls the FastAPI backend cross-origin directly (CORS-allowlisted), not through Next's rewrite proxy, so the SSE stream isn't buffered.
 
-- **`/`** — pipeline console: run form, chapter queue (batch runs), live agent timeline, CSV compare/diff, escalation panel, and an L2 (cross-chapter) prerequisite run form.
+- **`/`** — pipeline console: a run form with four modes (**Generate** from the KB, **CSV** for L1-prereqs-only on a pasted CSV, **L2 Prerequisites**, **L3 Prerequisites**), per-agent model overrides, a sequentially drained chapter queue, live agent timeline, CSV compare/diff, prerequisite-mapping summary, run history, and an escalation panel.
 - **`/analytics`** — run history, model-performance rollup (pass rate, avg tokens/cost per agent+model), and per-chapter drill-down.
+
+### This backend is not deployable as-is
+
+`api.py` is **localhost-development-only**:
+
+- **No authentication or authorization on any endpoint** — including the six write/run
+  endpoints (`/run`, `/reject`, `/run-prerequisite-only`, `/run-l2-prerequisite`,
+  `/run-l3-prerequisite`, `/re-extract`), which spend API credits, mutate the KB, and can
+  `git push`.
+- The only access control is CORS, allowlisted to `http://localhost:3000`. CORS is a
+  browser policy, not a server-side guard — it stops nothing that isn't a browser.
+- Bind it to `127.0.0.1` and do not expose it to a network or the internet. See
+  **[SECURITY.md](SECURITY.md)**.
 
 ---
 
@@ -212,11 +447,15 @@ Open **http://localhost:3000**. The dashboard calls the FastAPI backend cross-or
 | Judge (candidate selection) | ✅ Shipped |
 | Prerequisites L1 (within-chapter) | ✅ Shipped |
 | Chapter Relevance + Prerequisites L2 (cross-chapter) | ✅ Shipped |
-| FastAPI backend + SSE streaming | ✅ Shipped |
+| Prerequisites L3 (cross-grade, same subject) | ✅ Shipped |
+| Prerequisites L4 (cross-subject) | 🔲 Planned — not implemented |
+| FastAPI backend + SSE streaming | ✅ Shipped (localhost only, unauthenticated) |
 | Live dashboard (pipeline console + analytics) | ✅ Shipped |
+| Prompt-library persistence of revised prompts | ⚠️ Intentionally disabled since `84151f7` — see Prompt Resolution |
 
 ---
 
 ## Related
 
-- **[q-matrix-kb](https://github.com/MaximusTitan/q-matrix-kb)** — Knowledge base (the data layer)
+- **[q-matrix-kb-template](https://github.com/MaximusTitan/q-matrix-kb-template)** — Knowledge base template (the data layer); structure only, you supply the curriculum material
+- **q-matrix-graph** — standalone 3D viewer for the exported knowledge graph; consumes the JSON written by `scripts/export_graph.py`
