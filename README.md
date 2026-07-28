@@ -10,6 +10,10 @@ Licensed under **[Apache 2.0](LICENSE)**. See **[CONTRIBUTING.md](CONTRIBUTING.m
 >
 > New here? **[docs/SETUP.md](docs/SETUP.md)** is the zero-to-running guide; **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** covers common failures.
 
+## Paper
+
+This repo implements the framework described in *Curriculum Brain: A Semi-Automated Framework for Q-Matrix Creation* — [read the draft](https://prickly-gopher-95e.notion.site/Curriculum-Brain-3a3527ed7aee80cc97f7ee52e302249e).
+
 ---
 
 ## What Q-Matrix Does
@@ -458,4 +462,5 @@ Open **http://localhost:3000**. The dashboard calls the FastAPI backend cross-or
 ## Related
 
 - **[q-matrix-kb-template](https://github.com/MaximusTitan/q-matrix-kb-template)** — Knowledge base template (the data layer); structure only, you supply the curriculum material
-- **q-matrix-graph** — standalone 3D viewer for the exported knowledge graph; consumes the JSON written by `scripts/export_graph.py`
+- **[q-matrix-graph-template](https://github.com/MaximusTitan/q-matrix-graph-template)** — standalone 3D viewer for the exported knowledge graph; consumes the JSON written by `scripts/export_graph.py`
+- **[q-matrix-dataset](https://github.com/MaximusTitan/q-matrix-dataset)** — a released, point-in-time snapshot of curriculum data produced by this pipeline
