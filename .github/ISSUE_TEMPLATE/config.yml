@@ -5,13 +5,18 @@ contact_links:
     about: >-
       Do not open a public issue for vulnerabilities. Read SECURITY.md and email
       shrideep@prosoftpeople.com with [SECURITY] in the subject line.
-  - name: Contributing guide
+  - name: Contributing — read this before opening a pull request
     url: https://github.com/MaximusTitan/q-matrix-agents/blob/main/CONTRIBUTING.md
     about: >-
-      Branch and PR workflow, testing expectations, code style, and how to propose a new
-      agent, a new skill module, or a pipeline improvement.
-  - name: Curriculum data, rulesets, and KB structure
-    url: https://github.com/MaximusTitan/q-matrix-kb-template
+      This repository is not currently accepting pull requests. The tracker is open and
+      bug reports are welcome. Forking is encouraged and needs no permission.
+  - name: Contribute curriculum data (q-matrix-dataset)
+    url: https://github.com/MaximusTitan/q-matrix-dataset
     about: >-
-      Curriculum material, ruleset content, and knowledge-base structure changes belong in
-      the KB template repository, which documents its own rights-attestation requirements.
+      Curriculum coverage, corrections, and new boards belong there — it is the repo open
+      for community contribution, and it documents its own rights-attestation rules.
+  - name: Architecture reference
+    url: https://github.com/MaximusTitan/q-matrix-agents/blob/main/ARCHITECTURE.md
+    about: >-
+      Control flow, KB layout, agent responsibilities, and model routing. Start here if you
+      are working in a fork.

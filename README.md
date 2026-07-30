@@ -4,7 +4,20 @@
 
 This repository is the **code layer** of the Q-Matrix system. It contains the orchestrator, eleven LLM-powered agents, a FastAPI backend, a live Next.js dashboard, and the skill modules that read from and write to the knowledge base.
 
-Licensed under **[Apache 2.0](LICENSE)**. See **[CONTRIBUTING.md](CONTRIBUTING.md)**, **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)**, and **[SECURITY.md](SECURITY.md)**.
+Licensed under **[Apache 2.0](LICENSE)**. See **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)** and **[SECURITY.md](SECURITY.md)**.
+
+### Open source, not currently seeking pull requests
+
+Use it, fork it, clone it, run it, build on it — that is what the Apache 2.0 licence is
+for, and you need no permission from us. What we cannot do right now is review and merge
+outside patches into this repo, so **q-matrix-agents is not currently accepting pull
+requests.** Issues are open and read: bug reports, reproducible failures, and questions
+about behaviour are all welcome, and so is telling us what you built from a fork.
+
+If you would like to contribute directly to Q-Matrix, the place to do it is
+**[q-matrix-dataset](https://github.com/MaximusTitan/q-matrix-dataset)** — the one
+repository in this family open for community contribution. See
+**[CONTRIBUTING.md](CONTRIBUTING.md)** for the full posture.
 
 > For the full system design (control-flow diagrams, KB layout, model routing, runtime topology) see **[ARCHITECTURE.md](ARCHITECTURE.md)** — this README is a quick-start overview.
 >
@@ -50,7 +63,7 @@ api.py                       ← FastAPI backend (:8000) — SSE streaming, anal
 │
 ├── utils/events.py          ← in-process pub/sub bus behind the SSE stream
 ├── tests/                   ← executable assert scripts (see "Tests" below)
-├── scripts/                 ← sync_textbooks_from_drive.py (Google Drive → KB)
+├── scripts/                 ← sync_textbooks_from_drive.py, export_graph.py
 └── dashboard/               ← Next.js live console + analytics (:3000)
 ```
 
@@ -276,8 +289,10 @@ If you run from the dashboard, treat committing the KB as a manual step.
 
 ## Cost
 
-Measured from 685 recorded run records (`total_cost_usd` in `run.json`), at the default
-model routing:
+Measured from 685 run records (`total_cost_usd` in `run.json`) produced by the maintainers'
+own CBSE corpus, at the default model routing. Those records live in the KB, not in this
+repo — the numbers are a reference point, not something you can reproduce from a fresh
+clone:
 
 | Stage | Median | Notes |
 |---|---|---|
@@ -343,12 +358,17 @@ escalations/{board}/{subject}/{grade}/{chapter}/{date}/
 
 ## Knowledge Graph Export
 
-Once a corpus has prerequisites mapped, `scripts/export_graph.py` turns the 223 per-chapter
-CSVs into a concept-level knowledge graph as three static JSON files:
+Once a corpus in your KB has prerequisites mapped, `scripts/export_graph.py` turns its
+per-chapter `confirmed_curriculum.csv` files into a concept-level knowledge graph as three
+static JSON files:
 
 ```bash
-python scripts/export_graph.py --out ../q-matrix-graph/public/graph --check
+python scripts/export_graph.py --out /path/to/graph/site/public/graph --check
 ```
+
+`--out` is required; `--pretty` indents the JSON. The exporter reads
+`$KB_ROOT/textbooks/CBSE` — the board is currently hardcoded as `BOARD = "CBSE"` in
+`scripts/export_graph.py`, so exporting another board means editing that constant.
 
 | File | Contents |
 |---|---|
@@ -362,15 +382,18 @@ in the KB — and mints a stable `sha1(subject|grade|chapter|concept)[:12]` id p
 `--check` exits non-zero if any reference fails to resolve, which makes it usable as a CI
 guard on KB edits.
 
-Three things it handles that a naive CSV reader will get wrong:
+Three things it handles that a naive CSV reader will get wrong, each found the hard way
+against the maintainers' corpus:
 
-- **L1 cells hold two shapes.** Mostly bare strings, but ~1,765 entries are
+- **L1 cells hold two shapes.** Mostly bare strings, but a substantial minority are
   `{"item", "reason"}` objects. A string-only parser drops them silently.
-- **Identity comes from the directory path, never the `chapter` column.** Two Maths Grade 4
-  files still carry pre-rename chapter names; trusting the column orphans their inbound edges.
+- **Identity comes from the directory path, never the `chapter` column.** Some files carry
+  pre-rename chapter names; trusting the column orphans their inbound edges.
 - **`run/` subdirectories are skipped.** They hold per-stage snapshots of the same chapters.
 
-Current output — printed on every run and written to `meta.json`:
+The summary below is printed on every run and written to `meta.json`. These particular
+figures are from the maintainers' CBSE corpus — **no curriculum data ships in this repo**,
+so your own numbers will differ entirely:
 
 ```
 223 chapter files -> 7145 rows
@@ -387,8 +410,10 @@ learning order. This inverts the CSV, where a row lists what it depends on.
 `graph-core.json` deliberately carries no timestamp, so re-exporting an unchanged KB is
 byte-identical and produces no diff.
 
-The graph is rendered by **[q-matrix-graph](https://github.com/MaximusTitan/q-matrix-graph)**,
-a standalone static site. See its README for the viewer.
+The graph is rendered by
+**[q-matrix-graph-template](https://github.com/MaximusTitan/q-matrix-graph-template)**, a
+standalone static site that consumes exactly these three files. See its README for the
+viewer.
 
 ---
 
@@ -457,5 +482,13 @@ Open **http://localhost:3000**. The dashboard calls the FastAPI backend cross-or
 
 ## Related
 
-- **[q-matrix-kb-template](https://github.com/MaximusTitan/q-matrix-kb-template)** — Knowledge base template (the data layer); structure only, you supply the curriculum material
-- **q-matrix-graph** — standalone 3D viewer for the exported knowledge graph; consumes the JSON written by `scripts/export_graph.py`
+| Repository | What it is | Contributions |
+|---|---|---|
+| **[q-matrix-dataset](https://github.com/MaximusTitan/q-matrix-dataset)** | The published curriculum dataset | **Open — this is where to contribute** |
+| **q-matrix-agents** (this repo) | Orchestrator, agents, skills, API, dashboard | Open source; not seeking PRs |
+| **[q-matrix-kb-template](https://github.com/MaximusTitan/q-matrix-kb-template)** | Knowledge-base template (the data layer); structure only, you supply the curriculum material | Open source; not seeking PRs |
+| **[q-matrix-graph-template](https://github.com/MaximusTitan/q-matrix-graph-template)** | Standalone viewer for the exported knowledge graph; consumes the JSON written by `scripts/export_graph.py` | Open source; not seeking PRs |
+
+**Paper draft:** [Curriculum Brain](https://prickly-gopher-95e.notion.site/Curriculum-Brain-3a3527ed7aee80cc97f7ee52e302249e) — the write-up of the approach this system implements.
+
+Citation metadata for this repository is in **[CITATION.cff](CITATION.cff)**.

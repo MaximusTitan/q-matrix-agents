@@ -1,3 +1,12 @@
+<!--
+Heads-up: this repository is not currently accepting pull requests from outside the
+maintainer team — see CONTRIBUTING.md. This template exists for maintainer PRs, and is
+left here so that forks inherit something useful.
+
+If you were about to propose a curriculum-data change, q-matrix-dataset is the repo open
+for contribution: https://github.com/MaximusTitan/q-matrix-dataset
+-->
+
 # What changed and why
 
 <!-- The problem, then the change. Not a restatement of the diff. -->

@@ -68,7 +68,10 @@ later grades.
   a diff and revertible.
 
 Hardening this — explicit untrusted-content delimiting, an injection detector, or a
-sanitization pass in `skills/pdf_reader.py` — is an open, welcome contribution.
+sanitization pass in `skills/pdf_reader.py` — is known, unfinished work. This repo is not
+taking pull requests (see [CONTRIBUTING.md](CONTRIBUTING.md)), so if you are running
+Q-Matrix on material you do not fully control, treat that hardening as yours to add in
+your fork.
 
 ### 2. LLM output is untrusted input
 
@@ -143,7 +146,7 @@ hard spend cap at the Vercel AI Gateway rather than relying on the application.
 ## Out of scope
 
 - Curriculum content being pedagogically wrong. That is a quality issue — open a normal
-  issue.
+  issue. The issue tracker stays open even though this repo does not take pull requests.
 - Vulnerabilities in dependencies (`openai`, `pdfplumber`, `fastapi`, `uvicorn`, Next.js)
   with no Q-Matrix-specific amplification. Report those upstream; tell us if this codebase
   makes one meaningfully worse.
