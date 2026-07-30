@@ -16,7 +16,7 @@ JSON contract that a browser can render without re-deriving any of it:
     meta.json            provenance, inventory, and the integrity report
 
 Usage:
-    python scripts/export_graph.py --out ../q-matrix-graph/public/graph --check
+    python scripts/export_graph.py --out ../q-matrix-graph-template/public/graph --check
 """
 
 import argparse
