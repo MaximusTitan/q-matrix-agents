@@ -23,6 +23,10 @@ repository in this family open for community contribution. See
 >
 > New here? **[docs/SETUP.md](docs/SETUP.md)** is the zero-to-running guide; **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** covers common failures.
 
+## Paper
+
+This repo implements the framework described in *Curriculum Brain: A Semi-Automated Framework for Q-Matrix Creation* — [read the draft](https://prickly-gopher-95e.notion.site/Curriculum-Brain-3a3527ed7aee80cc97f7ee52e302249e).
+
 ---
 
 ## What Q-Matrix Does
