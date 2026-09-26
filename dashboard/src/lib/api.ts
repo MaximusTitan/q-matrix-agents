@@ -2,6 +2,7 @@ import type {
   AgentKey,
   AnalyticsResponse,
   ChapterAnalytics,
+  Check2Mode,
   L2EligibleChaptersResponse,
   L3EligibleChaptersResponse,
   ModelPerformanceResponse,
@@ -30,19 +31,19 @@ export function streamUrl(runId: string): string {
 }
 
 export async function postRun(
-  values: RunFormValues & { human_feedback?: string; no_sync?: boolean } & ModelsOverride
+  values: RunFormValues & { human_feedback?: string; no_sync?: boolean; check2_mode?: Check2Mode } & ModelsOverride
 ): Promise<{ run_id: string }> {
   return post("/run", { ...values, no_sync: true });
 }
 
 export async function postReject(
-  values: RunFormValues & { reason: string; no_sync?: boolean } & ModelsOverride
+  values: RunFormValues & { reason: string; no_sync?: boolean; check2_mode?: Check2Mode } & ModelsOverride
 ): Promise<{ run_id: string }> {
   return post("/reject", { ...values, no_sync: true });
 }
 
 export async function postReExtract(
-  values: RunFormValues & { map_guidance: string; no_sync?: boolean } & ModelsOverride
+  values: RunFormValues & { map_guidance: string; no_sync?: boolean; check2_mode?: Check2Mode } & ModelsOverride
 ): Promise<{ run_id: string }> {
   return post("/re-extract", { ...values, no_sync: true });
 }

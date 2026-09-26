@@ -11,6 +11,11 @@ rendered by this module remain readable by the existing escalation read-back pat
 Do not rename `**Board:**`, `**Total Attempts:**`, `### Attempt N (input_type: ...)`,
 `**Check 1 — Universal Rules:**`, `**Check 2 — CSM Coverage:**`, `Missing concepts:`,
 or `Missing skills:` without updating those parsers.
+
+Report mode (`check2_mode == "report"`) leaves the Check 2 lines out of each attempt,
+since Check 2 did not run there, so the parser reads `check2_passed` as None rather
+than a false "FAILED". The single Check 2 run is rendered in its own section after the
+attempt history, where the parser never looks. Gate-mode output is unchanged.
 """
 
 
@@ -37,7 +42,15 @@ def _attempt_section(attempt: dict) -> str:
         )
 
     c1 = gen.get("check1", {})
-    c2 = gen.get("check2", {})
+    c2 = gen.get("check2")
+    if c2 is None:
+        # Report mode: Check 2 did not run on this attempt.
+        return (
+            f"### Attempt {n} (input_type: {input_type})\n\n"
+            f"**Prompt used:** see `attempt_{n}_prompt.md`\n\n"
+            f"**Check 1 — Universal Rules:** {_check_status(c1)}\n"
+            f"{_feedback_bullets(c1)}\n"
+        )
     missing_concepts = ", ".join(c2.get("missing_concepts", [])) or "None"
     missing_skills = ", ".join(c2.get("missing_skills", [])) or "None"
 
@@ -50,6 +63,34 @@ def _attempt_section(attempt: dict) -> str:
         f"{_feedback_bullets(c2)}\n"
         f"Missing concepts: {missing_concepts}\n"
         f"Missing skills:   {missing_skills}\n"
+    )
+
+
+def _check2_report_section(record: dict) -> str:
+    """Report mode's single Check 2 run on the final candidate — empty in gate mode."""
+    if record.get("check2_mode") != "report":
+        return ""
+    rep = record.get("check2_report") or {}
+    heading = "## Check 2 Report (review aid — did not gate this run)\n\n"
+    if not rep.get("ran"):
+        reason = rep.get("error") or rep.get("reason") or "not run"
+        return f"{heading}Check 2 did not run: {reason}.\n\n---\n\n"
+
+    def _items(values: list) -> str:
+        return "\n".join(f"  - {v}" for v in values) or "  None"
+
+    return (
+        heading
+        + f"Coverage of candidate `{rep.get('candidate_id')}` against the concept-skill-map. "
+        "These lists are for human review; they did not fail the run, trigger a repair, or "
+        "reach the Generator or Revision.\n\n"
+        "**In the map, not in the candidate (missing):**\n"
+        f"Concepts:\n{_items(rep.get('missing_concepts', []))}\n"
+        f"Skills:\n{_items(rep.get('missing_skills', []))}\n\n"
+        "**In the candidate, not in the map (extra):**\n"
+        f"Concepts:\n{_items(rep.get('extra_concepts', []))}\n"
+        f"Skills:\n{_items(rep.get('extra_skills', []))}\n\n"
+        "---\n\n"
     )
 
 
@@ -121,6 +162,7 @@ def render_report_md(record: dict) -> str:
     escalated = record.get("final_status") == "escalated"
     title = "Escalation Report" if escalated else "Run Report"
     failed_check = record.get("failed_check") or "none"
+    mode_line = "**Check 2 Mode:** report\n" if record.get("check2_mode") == "report" else ""
 
     attempts = record.get("attempts", [])
     history_text = "\n---\n\n".join(_attempt_section(a) for a in attempts)
@@ -137,11 +179,13 @@ def render_report_md(record: dict) -> str:
         f"**Chapter:** {record.get('chapter', '')}\n"
         f"**Date:** {record.get('date', '')}\n"
         f"**Failed Check:** {failed_check}\n"
-        f"**Total Attempts:** {len(attempts)}\n\n"
+        f"**Total Attempts:** {len(attempts)}\n"
+        f"{mode_line}\n"
         "---\n\n"
         "## Attempt History\n\n"
         f"{history_text}"
         "---\n\n"
+        f"{_check2_report_section(record)}"
         f"{_doctored_section(record)}"
         "## Final CSV\n\n"
         f"See `{final_csv_file}` in this folder.\n\n"

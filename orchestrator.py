@@ -13,6 +13,7 @@ CLI Usage:
   python orchestrator.py --reject ... --reason "Max 3 skills per concept"
   python orchestrator.py --re-extract ... --map-guidance "Only NCERT LO-aligned concepts"
   python orchestrator.py ... --no-sync
+  python orchestrator.py ... --check2-mode report
 """
 
 import argparse
@@ -22,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from agents.map_extraction import run as run_map_extraction
 from agents.generator      import run as run_generator
-from agents.eval           import run as run_eval
+from agents.eval           import run as run_eval, run_check2
 from agents.revision       import run as run_revision
 from agents.doctor         import run as run_doctor
 from agents.rules_doctor   import run as run_rules_doctor
@@ -61,6 +62,16 @@ from skills.llm import DEFAULT_MODEL, add_usage
 # once the generator stops closing gaps — see the adaptive-budget check in run_pipeline.
 MAX_ATTEMPTS = 6
 MAX_PLATEAU_ROUNDS = 2  # consecutive non-improving attempts before escalating early
+
+# How Check 2 (concept-skill-map coverage) takes part in a full run.
+#   gate   — default. Check 2 runs on every CSV, fails the attempt, drives the coverage
+#            Doctor, and its missing items are fed back to the Generator and Revision.
+#   report — review aid only. Check 2 runs once, on the final candidate, and writes its
+#            missing/extra lists to report.md and run.json. It never fails a run, never
+#            invokes the Doctor, and none of its items reach retry feedback; the map is
+#            also withheld from the Rules Doctor and the Judge. Routing treats Check 2 as
+#            passing and the plateau early stop counts Check 1 violations only.
+CHECK2_MODES = ("gate", "report")
 
 # Keys accepted in the `models` dict threaded through run_pipeline(...) — one per
 # agent, each defaulting to AGENT_DEFAULT_MODELS[key] when not supplied.
@@ -781,10 +792,17 @@ def _failed_check_label(c1_passed: bool, c2_passed: bool) -> str:
     return "check1" if not c1_passed else "check2"
 
 
-def _collect_feedback(c1: dict, c2: dict) -> list[str]:
+def _collect_feedback(c1: dict, c2: dict | None) -> list[str]:
+    """Retry feedback for the Generator and Revision.
+
+    c2 is None in report mode (Check 2 did not run on this attempt), so only Check 1
+    violations are returned — no concept-skill-map item can reach either agent.
+    """
     feedback = []
     for f in c1.get("feedback", []):
         feedback.append(f"[Check 1] {f}")
+    if c2 is None:
+        return feedback
     missing_concepts = c2.get("missing_concepts", [])
     missing_skills   = c2.get("missing_skills",   [])
     if missing_concepts:
@@ -1084,6 +1102,7 @@ def _rules_doctor_and_record(
     chapter: str,
     attempt: int,
     models: dict | None = None,
+    check2_mode: str = "gate",
 ) -> dict:
     """
     Doctor a Check-1-only failing CSV and re-verify it through both checks.
@@ -1092,6 +1111,9 @@ def _rules_doctor_and_record(
     Check 2 (coverage), so rather than regenerate, we surgically fix the universal-rule
     violations and re-evaluate. The regression guard here protects the coverage the CSV
     came in with — a rule-fix must not break a matched concept/skill.
+
+    In report mode the caller passes check2={} and csm_data=None (the map is withheld),
+    the re-verification runs Check 1 only, and there is no coverage to regress.
 
     Returns:
         {"csv": str|None, "passed": bool} — csv is None if doctoring produced an
@@ -1180,14 +1202,21 @@ def _rules_doctor_and_record(
             "concept_skill_map": csm_data,
         },
     })
-    doc_eval = run_eval(doctored_csv, board, subject, grade, chapter, model=eval_model)
+    doc_eval = run_eval(
+        doctored_csv, board, subject, grade, chapter, model=eval_model,
+        check2=check2_mode == "gate",
+    )
     dc1, dc2 = doc_eval["check1"], doc_eval["check2"]
 
     # ── Regression guard ───────────────────────────────────────────────────────
     # The CSV came in passing Check 2. Did the rule-fix break any coverage it already
     # had? Compare the incoming Check 2 (matched) against the re-evaluated Check 2
     # (missing). Any matched → missing flip means the rephrase lost a cover.
-    regressions = _coverage_regressions(check2, dc2)
+    # Report mode (dc2 is None): Check 2 did not run, so there is nothing to compare.
+    if dc2 is None:
+        regressions = {"concepts": [], "skills": []}
+    else:
+        regressions = _coverage_regressions(check2, dc2)
     regressed   = bool(regressions["concepts"] or regressions["skills"])
     if regressed:
         print(f"[orchestrator] ⚠ Rules Doctor REGRESSED coverage — "
@@ -1204,7 +1233,7 @@ def _rules_doctor_and_record(
                 "usage":    dc1.get("usage"),
                 "cost_usd": dc1.get("cost_usd"),
             },
-            "check2": {
+            "check2": None if dc2 is None else {
                 "passed":             dc2["passed"],
                 "feedback":           dc2.get("feedback",         []),
                 "missing_concepts":   dc2.get("missing_concepts", []),
@@ -1225,8 +1254,12 @@ def _rules_doctor_and_record(
             "model":    eval_model,
         },
     })
+    if dc2 is None:
+        check2_mark = "not run (report mode)"
+    else:
+        check2_mark = "✓" if dc2["passed"] else "✗"
     print(f"[orchestrator] Rules-doctored CSV re-verify — "
-          f"check1 {'✓' if dc1['passed'] else '✗'}, check2 {'✓' if dc2['passed'] else '✗'}"
+          f"check1 {'✓' if dc1['passed'] else '✗'}, check2 {check2_mark}"
           f"{' (REGRESSED)' if regressed else ''}")
 
     rules_entry = {
@@ -1252,6 +1285,46 @@ def _rules_doctor_and_record(
     }
 
 
+def _run_check2_report(emit, builder, *, chosen, attempt, board, subject, grade, chapter, model):
+    """
+    Report mode: run Check 2 once on the final candidate and record its missing/extra
+    lists as a review aid. Never raises and never changes the run's outcome — a
+    Check 2 error is recorded in place of the lists.
+    """
+    emit("agent_started", {
+        "agent":   "Check 2 (report)",
+        "attempt": attempt,
+        "input":   {"candidate_id": chosen["id"], "csv_preview": chosen["csv"]},
+    })
+    try:
+        c2 = run_check2(chosen["csv"], board, subject, grade, chapter, model=model)
+    except Exception as e:
+        print(f"[orchestrator] Check 2 report failed — {e}")
+        builder.set_check2_report(candidate_id=chosen["id"], check2=None, error=str(e), model=model)
+        emit("agent_completed", {"agent": "Check 2 (report)", "output": {"error": str(e), "model": model}})
+        return
+
+    builder.set_check2_report(candidate_id=chosen["id"], check2=c2, model=model)
+    print(f"[orchestrator] Check 2 report (review aid, not a gate) — "
+          f"missing: {len(c2.get('missing_concepts', []))} concept(s), "
+          f"{len(c2.get('missing_skills', []))} skill(s); "
+          f"extra: {len(c2.get('extra_concepts', []))} concept(s), "
+          f"{len(c2.get('extra_skills', []))} skill(s)")
+    emit("agent_completed", {
+        "agent": "Check 2 (report)",
+        "output": {
+            "candidate_id":     chosen["id"],
+            "missing_concepts": c2.get("missing_concepts", []),
+            "missing_skills":   c2.get("missing_skills",   []),
+            "extra_concepts":   c2.get("extra_concepts",   []),
+            "extra_skills":     c2.get("extra_skills",     []),
+            "usage":            c2.get("usage"),
+            "cost_usd":         c2.get("cost_usd"),
+            "model":            model,
+        },
+    })
+
+
 def _print_header(board, subject, grade, chapter, extra=None):
     print(f"\n{'='*60}")
     print(f"Q-Matrix Pipeline")
@@ -1271,6 +1344,7 @@ def run_pipeline(
     human_feedback: str = None,
     models: dict | None = None,
     emit=None,
+    check2_mode: str = "gate",
 ) -> dict:
     """
     Run the full pipeline for one chapter.
@@ -1282,7 +1356,12 @@ def run_pipeline(
         emit: Optional callable(event_type: str, data: dict).
               Called at each key step so the API can stream events to the frontend.
               Defaults to no-op — CLI mode works without it.
+        check2_mode: "gate" (default) or "report" — see CHECK2_MODES.
     """
+    if check2_mode not in CHECK2_MODES:
+        raise ValueError(f"check2_mode must be one of {CHECK2_MODES}, got {check2_mode!r}")
+    report_mode = check2_mode == "report"
+
     if emit is None:
         emit = _noop
 
@@ -1290,11 +1369,15 @@ def run_pipeline(
         board, subject, grade, chapter,
         extra=f"Human feedback: {human_feedback[:80]}..." if human_feedback else None,
     )
+    if report_mode:
+        print("[orchestrator] Check 2 mode: report — coverage is a review aid only; "
+              "it runs once on the final candidate and never gates or steers this run\n")
 
     emit("pipeline_started", {
         "board": board, "subject": subject,
         "grade": grade, "chapter": chapter,
         "human_feedback": human_feedback,
+        "check2_mode": check2_mode,
     })
 
     map_exists            = concept_skill_map_exists(board, subject, grade, chapter)
@@ -1306,7 +1389,9 @@ def run_pipeline(
     # ── Structured run record ───────────────────────────────────────────────────
     # Accumulates every CSV + its eval checks + the doctor trail as the run proceeds,
     # and is persisted (latest-only) for BOTH passing and escalated runs.
-    builder = RunRecordBuilder(board, subject, grade, chapter, date.today().isoformat())
+    builder = RunRecordBuilder(
+        board, subject, grade, chapter, date.today().isoformat(), check2_mode=check2_mode,
+    )
 
     # ── Ephemeral revision state ────────────────────────────────────────────────
     # The revised prompt is threaded through the run IN MEMORY only — never written to
@@ -1474,7 +1559,12 @@ def run_pipeline(
         })
 
         eval_model = _model_for(models, "eval")
-        eval_result = run_eval(current_csv, board, subject, grade, chapter, model=eval_model)
+        # Report mode runs Check 1 only here — c2 is None and Check 2 runs once, on the
+        # final candidate, after the loop.
+        eval_result = run_eval(
+            current_csv, board, subject, grade, chapter, model=eval_model,
+            check2=not report_mode,
+        )
         c1 = eval_result["check1"]
         c2 = eval_result["check2"]
 
@@ -1487,7 +1577,7 @@ def run_pipeline(
                     "usage":    c1.get("usage"),
                     "cost_usd": c1.get("cost_usd"),
                 },
-                "check2": {
+                "check2": None if c2 is None else {
                     "passed":            c2["passed"],
                     "feedback":          c2.get("feedback",          []),
                     "missing_concepts":  c2.get("missing_concepts",  []),
@@ -1507,7 +1597,8 @@ def run_pipeline(
         })
 
         print(f"[orchestrator] Check 1: {'✓ PASSED' if c1['passed'] else '✗ FAILED'}")
-        print(f"[orchestrator] Check 2: {'✓ PASSED' if c2['passed'] else '✗ FAILED'}")
+        if c2 is not None:
+            print(f"[orchestrator] Check 2: {'✓ PASSED' if c2['passed'] else '✗ FAILED'}")
 
         builder.add_attempt(
             attempt=attempt,
@@ -1522,7 +1613,11 @@ def run_pipeline(
             model=_model_for(models, "generator"),
         )
 
-        if c1["passed"] and c2["passed"]:
+        # Routing treats a Check 2 that didn't run (report mode) as passing, so a Check 1
+        # failure takes the check1-only path: Rules Doctor, then Revision.
+        c2_passed = True if c2 is None else c2["passed"]
+
+        if c1["passed"] and c2_passed:
             print(f"\n[orchestrator] ✓ Pipeline passed on attempt {attempt}")
             passing_candidates.append(
                 _candidate("generated", attempt, current_csv, gen_result["rows"])
@@ -1533,7 +1628,7 @@ def run_pipeline(
         # Runs even on the LAST attempt so the final failing generation still yields
         # a fallback candidate. The doctored CSV is held as a best-candidate and used
         # below as a worked reference when writing the generalized prompt.
-        check2_only           = c1["passed"] and not c2["passed"]
+        check2_only           = c1["passed"] and not c2_passed
         doctored_this_attempt = None
         if check2_only:
             try:
@@ -1575,26 +1670,32 @@ def run_pipeline(
         # Produces a fallback candidate only — the prompt revision below (Branch A) is
         # unchanged. Runs even on the LAST attempt so a final failing generation still
         # yields a candidate.
-        check1_only = c2["passed"] and not c1["passed"]
+        check1_only = c2_passed and not c1["passed"]
         if check1_only:
             try:
                 universal_rules = load_rules(board, subject, grade)
             except Exception:
                 universal_rules = ""
 
-            csm_for_doctor = csm_data
-            if csm_for_doctor is None:
-                try:
-                    csm_for_doctor = load_concept_skill_map(board, subject, grade, chapter)
-                except Exception:
-                    csm_for_doctor = None  # rules doctor can still run without the map
+            if report_mode:
+                # The map and Check 2 matches are withheld so coverage can't shape the
+                # repaired CSV, which may become the final candidate.
+                csm_for_doctor = None
+            else:
+                csm_for_doctor = csm_data
+                if csm_for_doctor is None:
+                    try:
+                        csm_for_doctor = load_concept_skill_map(board, subject, grade, chapter)
+                    except Exception:
+                        csm_for_doctor = None  # rules doctor can still run without the map
 
             rules_doctored = _rules_doctor_and_record(
                 emit,
-                csv=current_csv, check1=c1, check2=c2, csm_data=csm_for_doctor,
+                csv=current_csv, check1=c1, check2={} if report_mode else c2,
+                csm_data=csm_for_doctor,
                 universal_rules=universal_rules,
                 board=board, subject=subject, grade=grade, chapter=chapter,
-                attempt=attempt, models=models,
+                attempt=attempt, models=models, check2_mode=check2_mode,
             )
             for entry in rules_doctored.get("doctor_entries", []):
                 builder.add_doctor(attempt=attempt, **entry)
@@ -1621,11 +1722,10 @@ def run_pipeline(
         # Only reached while STILL failing both checks. Keep going while the generator
         # is closing gaps; stop early once it plateaus (no reduction for
         # MAX_PLATEAU_ROUNDS attempts) so a stuck chapter doesn't burn the whole ceiling.
-        gap_count = (
-            len(c1.get("feedback", []))
-            + len(c2.get("missing_concepts", []))
-            + len(c2.get("missing_skills", []))
-        )
+        # Report mode counts Check 1 violations only (c2 is None).
+        gap_count = len(c1.get("feedback", []))
+        if c2 is not None:
+            gap_count += len(c2.get("missing_concepts", [])) + len(c2.get("missing_skills", []))
         if prev_gap_count is not None and gap_count >= prev_gap_count:
             plateau_rounds += 1
         else:
@@ -1714,8 +1814,8 @@ def run_pipeline(
 
         else:
             # ── Branch A — check1 failed or both failed ─────────────────────────
-            failed_check = _failed_check_label(c1["passed"], c2["passed"])
-            mode         = _revision_mode(current_input_type, c1["passed"], c2["passed"])
+            failed_check = _failed_check_label(c1["passed"], c2_passed)
+            mode         = _revision_mode(current_input_type, c1["passed"], c2_passed)
 
             emit("agent_started", {
                 "agent":   "Revision",
@@ -1781,10 +1881,13 @@ def run_pipeline(
                 judge_rules = load_rules(board, subject, grade)
             except Exception:
                 judge_rules = ""
-            try:
-                judge_csm = load_concept_skill_map(board, subject, grade, chapter)
-            except Exception:
-                judge_csm = None
+            if report_mode:
+                judge_csm = None  # coverage must not steer selection in report mode
+            else:
+                try:
+                    judge_csm = load_concept_skill_map(board, subject, grade, chapter)
+                except Exception:
+                    judge_csm = None
 
             emit("agent_started", {
                 "agent":   "Judge",
@@ -1852,6 +1955,17 @@ def run_pipeline(
                 model=judge_model,
             )
 
+        # ── Check 2 report (report mode only) ───────────────────────────────────
+        # The single Check 2 run of a report-mode pass, on the candidate that passed
+        # Check 1. Its lists go to report.md / run.json for human review only — the run
+        # has already passed and nothing below reads them.
+        if report_mode:
+            _run_check2_report(
+                emit, builder, chosen=chosen, attempt=attempt,
+                board=board, subject=subject, grade=grade, chapter=chapter,
+                model=_model_for(models, "eval"),
+            )
+
         # ── Prerequisite mapping (Level 1, within-chapter) + persist checkpoint ──
         prereq_model = _model_for(models, "prerequisite")
         final_csv, checkpoint, prereq_usage, prereq_cost = _run_prerequisite_phase(
@@ -1889,7 +2003,7 @@ def run_pipeline(
         }
 
     # ── Escalate ──────────────────────────────────────────────────────────────
-    failed_check = _failed_check_label(c1["passed"], c2["passed"])
+    failed_check = _failed_check_label(c1["passed"], True if c2 is None else c2["passed"])
 
     builder.finalize(
         final_status="escalated", failed_check=failed_check,
@@ -1918,7 +2032,7 @@ def run_pipeline(
         "folder":       folder,
         "last_feedback": {
             "check1": c1["feedback"],
-            "check2": {
+            "check2": None if c2 is None else {
                 "feedback":         c2.get("feedback", []),
                 "missing_concepts": c2.get("missing_concepts", []),
                 "missing_skills":   c2.get("missing_skills", []),
@@ -1931,15 +2045,18 @@ def run_pipeline(
 
 # ─── Special handlers ─────────────────────────────────────────────────────────
 
-def handle_reject(board, subject, grade, chapter, reason, emit=None, models: dict | None = None):
+def handle_reject(board, subject, grade, chapter, reason, emit=None, models: dict | None = None,
+                  check2_mode: str = "gate"):
     emit = emit or _noop
     print(f"\n[orchestrator] Encoding rejection as grade rule: {reason}")
     append_grade_rule(board, subject, grade, reason)
     print(f"[orchestrator] Rule saved. Re-running pipeline...\n")
-    return run_pipeline(board, subject, grade, chapter, models=models, emit=emit)
+    return run_pipeline(board, subject, grade, chapter, models=models, emit=emit,
+                        check2_mode=check2_mode)
 
 
-def handle_re_extract(board, subject, grade, chapter, map_guidance, emit=None, models: dict | None = None):
+def handle_re_extract(board, subject, grade, chapter, map_guidance, emit=None, models: dict | None = None,
+                      check2_mode: str = "gate"):
     emit = emit or _noop
     print(f"\n[orchestrator] Saving extraction guidance...")
     save_extraction_guidance(board, subject, grade, chapter, map_guidance)
@@ -1960,7 +2077,8 @@ def handle_re_extract(board, subject, grade, chapter, map_guidance, emit=None, m
         },
     })
     print(f"[orchestrator] New map: {len(result['concepts'])} concepts, {len(result['skills'])} skills")
-    return run_pipeline(board, subject, grade, chapter, models=models, emit=emit)
+    return run_pipeline(board, subject, grade, chapter, models=models, emit=emit,
+                        check2_mode=check2_mode)
 
 
 # ─── CLI entry point ──────────────────────────────────────────────────────────
@@ -1980,6 +2098,10 @@ def main():
                         help="Path to a curriculum CSV; skips Stage 1 and runs only "
                              "prerequisite mapping (identifiers derived from the CSV).")
     parser.add_argument("--no-sync",        action="store_true")
+    parser.add_argument("--check2-mode",    choices=CHECK2_MODES, default="gate",
+                        help="gate (default): Check 2 gates every attempt and drives repair. "
+                             "report: Check 2 runs once on the final candidate as a review "
+                             "aid and never fails or steers the run.")
 
     args = parser.parse_args()
 
@@ -2006,13 +2128,16 @@ def main():
             print(f"[orchestrator] Warning: KB pull failed — {e}")
 
     if args.reject:
-        result = handle_reject(args.board, args.subject, args.grade, args.chapter, args.reason)
+        result = handle_reject(args.board, args.subject, args.grade, args.chapter, args.reason,
+                               check2_mode=args.check2_mode)
     elif args.re_extract:
-        result = handle_re_extract(args.board, args.subject, args.grade, args.chapter, args.map_guidance)
+        result = handle_re_extract(args.board, args.subject, args.grade, args.chapter, args.map_guidance,
+                                   check2_mode=args.check2_mode)
     else:
         result = run_pipeline(
             args.board, args.subject, args.grade, args.chapter,
             human_feedback=args.human_feedback,
+            check2_mode=args.check2_mode,
         )
 
     # Push after every run (pass OR escalation) so the structured run record — which

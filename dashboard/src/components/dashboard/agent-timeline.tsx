@@ -21,6 +21,7 @@ const AGENT_ICONS: Record<string, string> = {
   "Map Extraction": "🗂",
   "Map Extraction + Generator": "⟳",
   Prerequisites: "🔗",
+  "Check 2 (report)": "📋",
 };
 
 const AGENT_COLORS: Record<string, string> = {
@@ -34,6 +35,7 @@ const AGENT_COLORS: Record<string, string> = {
   "Map Extraction": "var(--qm-blue)",
   "Map Extraction + Generator": "var(--qm-blue)",
   Prerequisites: "var(--qm-green)",
+  "Check 2 (report)": "var(--qm-amber)",
 };
 
 // Keys filtered from the generic IO display (handled by dedicated sub-components)
@@ -799,7 +801,10 @@ function EvalCard({ agent }: { agent: AgentRecord }) {
   const check1 = out?.check1 as CheckResult | null;
   const check2 = out?.check2 as CheckResult | null;
 
-  const hasDiff = csvText && csm && csm.concepts?.length > 0;
+  // Report mode: Check 2 didn't run on this CSV (check2 is null), so there is no
+  // coverage result to diff against the map.
+  const check2NotRun = out != null && check2 === null;
+  const hasDiff = !check2NotRun && csvText && csm && csm.concepts?.length > 0;
 
   return (
     <Card className="border-border bg-card py-0">
@@ -896,6 +901,12 @@ function EvalCard({ agent }: { agent: AgentRecord }) {
                 {check2.passed && (
                   <div className="text-[10px] text-[var(--qm-green)] pl-3">All concepts and skills covered</div>
                 )}
+              </div>
+            )}
+
+            {check2NotRun && (
+              <div className="text-[10px] text-muted-foreground">
+                Check 2 not run (report mode)
               </div>
             )}
           </div>

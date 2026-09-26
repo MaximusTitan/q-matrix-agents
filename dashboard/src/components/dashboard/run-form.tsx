@@ -17,12 +17,20 @@ import { fetchModels } from "@/lib/models";
 import { AgentModelPicker } from "./model-select";
 import { L2RunForm } from "./l2-run-form";
 import { L3RunForm } from "./l3-run-form";
-import { AGENT_KEYS, type AgentKey, type ModelInfo, type RunFormValues, type StartRunOptions } from "@/lib/types";
+import {
+  AGENT_KEYS,
+  type AgentKey,
+  type Check2Mode,
+  type ModelInfo,
+  type RunFormValues,
+  type StartRunOptions,
+} from "@/lib/types";
 
 export interface EnqueueOptions {
   l2Prerequisite?: boolean;
   l3Prerequisite?: boolean;
   models?: Partial<Record<AgentKey, string>>;
+  check2Mode?: Check2Mode;
 }
 
 // Keep in sync with orchestrator.py::AGENT_DEFAULT_MODELS.
@@ -115,6 +123,8 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
   // "l3" = cross-grade prerequisite mapping for a chapter with L1 already mapped
   // (in its own grade and every earlier grade of the subject).
   const [mode, setMode] = useState<"generate" | "csv" | "l2" | "l3">("generate");
+  // Generate mode only: how Check 2 takes part in the run (see Check2Mode).
+  const [check2Mode, setCheck2Mode] = useState<Check2Mode>("gate");
   const [csvText, setCsvText] = useState("");
 
   // Per-agent model overrides (advanced, collapsed by default). Omitted keys fall
@@ -317,13 +327,38 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
             onChange={handleChapterChange}
           />
 
+          <div className="space-y-1.5">
+            <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              Check 2 (coverage)
+            </Label>
+            <Select
+              value={check2Mode}
+              onValueChange={(v) => v && setCheck2Mode(v as Check2Mode)}
+              disabled={isRunning}
+            >
+              <SelectTrigger className="h-8 w-full bg-secondary text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="gate">Gate (default)</SelectItem>
+                <SelectItem value="report">Report only</SelectItem>
+              </SelectContent>
+            </Select>
+            {check2Mode === "report" && (
+              <p className="text-[10px] leading-snug text-muted-foreground">
+                Coverage runs once on the final CSV as a review list. It never fails the run or
+                feeds retries.
+              </p>
+            )}
+          </div>
+
           {modelsSection}
 
           <div className="flex gap-2">
             <Button
               className="flex-1 text-xs font-bold"
               disabled={!canRun}
-              onClick={() => onStart({ ...form, models: modelsForStart })}
+              onClick={() => onStart({ ...form, models: modelsForStart, check2Mode })}
             >
               ▶ Run Pipeline
             </Button>
@@ -332,7 +367,7 @@ export function RunForm({ form, onFormChange, isRunning, onStart, onEnqueue }: R
                 variant="secondary"
                 className="text-xs font-bold"
                 disabled={!canQueue}
-                onClick={() => onEnqueue(form)}
+                onClick={() => onEnqueue(form, { check2Mode })}
                 title="Add this chapter to the queue"
               >
                 ＋ Queue

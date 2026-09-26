@@ -21,6 +21,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from typing import Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
@@ -70,6 +71,7 @@ class RunRequest(BaseModel):
     human_feedback: str | None = None
     models:         dict[str, str] | None = None  # agent key -> Gateway model id
     no_sync:        bool       = True  # default True for safety in dev
+    check2_mode:    Literal["gate", "report"] = "gate"  # see orchestrator.CHECK2_MODES
 
 
 class RejectRequest(BaseModel):
@@ -80,6 +82,7 @@ class RejectRequest(BaseModel):
     reason:  str
     models:  dict[str, str] | None = None
     no_sync: bool = True
+    check2_mode: Literal["gate", "report"] = "gate"
 
 
 class ReExtractRequest(BaseModel):
@@ -90,6 +93,7 @@ class ReExtractRequest(BaseModel):
     map_guidance: str
     models:       dict[str, str] | None = None
     no_sync:      bool = True
+    check2_mode:  Literal["gate", "report"] = "gate"
 
 
 class PrereqOnlyRequest(BaseModel):
@@ -219,6 +223,7 @@ async def start_run(req: RunRequest):
         chapter=req.chapter,
         human_feedback=req.human_feedback,
         models=req.models,
+        check2_mode=req.check2_mode,
     )
     return {"run_id": run_id}
 
@@ -236,6 +241,7 @@ async def reject(req: RejectRequest):
         chapter=req.chapter,
         reason=req.reason,
         models=req.models,
+        check2_mode=req.check2_mode,
     )
     return {"run_id": run_id}
 
@@ -358,6 +364,7 @@ async def re_extract(req: ReExtractRequest):
         chapter=req.chapter,
         map_guidance=req.map_guidance,
         models=req.models,
+        check2_mode=req.check2_mode,
     )
     return {"run_id": run_id}
 

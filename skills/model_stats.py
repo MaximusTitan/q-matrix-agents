@@ -172,6 +172,10 @@ def compute_model_performance(records: list[dict]) -> dict:
                 checks.append(g["check1"])
             if g.get("check2"):
                 checks.append(g["check2"])
+        # Report mode's single Check 2 run on the final candidate (not per attempt).
+        check2_report = rec.get("check2_report")
+        if check2_report and check2_report.get("ran"):
+            checks.append(check2_report)
         eval_model = _first_model(checks)
         if eval_model:
             usage, cost = _sum_attempt_usage_cost(checks)

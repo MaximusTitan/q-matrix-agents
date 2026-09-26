@@ -96,6 +96,7 @@ export function MainPanel({ state, form, onStart }: MainPanelProps) {
               form={form}
               escalation={state.escalation}
               attempts={state.attempts}
+              check2Mode={state.check2Mode}
               onStart={onStart}
             />
           )}

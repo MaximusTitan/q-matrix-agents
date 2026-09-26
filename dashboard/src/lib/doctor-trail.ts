@@ -96,7 +96,8 @@ export function doctorStepsFromAgents(agents: AgentRecord[]): DoctorStepView[] {
         }) ?? null;
         step.check1 = c1;
         step.check2 = c2;
-        step.passed = Boolean(c1?.passed && c2?.passed);
+        // c2 is null when Check 2 didn't run (report mode) — then Check 1 alone decides.
+        step.passed = Boolean(c1?.passed && (c2 === null || c2.passed));
         step.regressed = Boolean(c2?.regressed);
         step.regressedConcepts = c2?.regressed_concepts ?? [];
         step.regressedSkills = c2?.regressed_skills ?? [];
