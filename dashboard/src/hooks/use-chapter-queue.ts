@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AgentKey,
+  Check2Mode,
   QueueItem,
   RunFormValues,
   RunOutcome,
@@ -13,6 +14,7 @@ interface EnqueueOptions {
   l2Prerequisite?: boolean;
   l3Prerequisite?: boolean;
   models?: Partial<Record<AgentKey, string>>;
+  check2Mode?: Check2Mode;
 }
 
 interface UseChapterQueueArgs {
@@ -68,6 +70,7 @@ export function useChapterQueue({ startRun, isRunning }: UseChapterQueueArgs) {
         l2Prerequisite: opts?.l2Prerequisite,
         l3Prerequisite: opts?.l3Prerequisite,
         models: opts?.models,
+        check2Mode: opts?.check2Mode,
       },
     ]);
   }, []);
@@ -96,6 +99,7 @@ export function useChapterQueue({ startRun, isRunning }: UseChapterQueueArgs) {
         l2Prerequisite: item.l2Prerequisite,
         l3Prerequisite: item.l3Prerequisite,
         models: item.models,
+        check2Mode: item.check2Mode,
       });
     },
     [startRun]

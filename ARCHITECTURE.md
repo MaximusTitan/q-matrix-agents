@@ -228,7 +228,8 @@ with L1/L2 equivalents alongside.
 
 `orchestrator.run_pipeline()` drives a bounded generate → evaluate → repair/revise loop
 (`MAX_ATTEMPTS = 6`, with an adaptive early-stop after `MAX_PLATEAU_ROUNDS = 2`
-non-improving attempts).
+non-improving attempts). The flowchart shows the default `gate` Check 2 mode; `report`
+mode is described under [Check 2 modes](#check-2-modes) below.
 
 ```mermaid
 flowchart TD
@@ -283,6 +284,37 @@ Key behaviors worth knowing:
   produce a persisted report + `run.json` rather than a crash — the dashboard and any
   batch queue always advance.
 
+### Check 2 modes
+
+`run_pipeline(check2_mode=…)` (CLI `--check2-mode`, API `check2_mode`, dashboard
+selector) sets whether Check 2 gates the loop. Values live in `orchestrator.CHECK2_MODES`.
+
+**`gate` (default).** The flowchart above. Check 2 runs alongside Check 1 on every
+generated and doctored CSV; a miss fails the attempt, a Check-2-only failure goes to the
+coverage Doctor, and the missing map items reach the Generator (`previous_csv` +
+`feedback`) and Revision verbatim through `_collect_feedback`.
+
+**`report`.** Check 2 is a review aid only:
+
+- Each attempt runs Check 1 only (`agents/eval.run(..., check2=False)`); the
+  per-attempt `check2` is `None`.
+- Routing treats Check 2 as passing. Check 1 passes → candidate, stop. Check 1 fails →
+  Rules Doctor (its re-verify is Check 1 only), then Revision (`failed_check="check1"`)
+  if the repair doesn't pass. The coverage Doctor and the doctored-reference revision
+  branch are never reached.
+- Retry feedback carries `[Check 1]` lines only. The Rules Doctor and the Judge get no
+  concept-skill-map, so the map cannot shape the output.
+- The plateau early stop counts Check 1 violations only.
+- After selection, `_run_check2_report` runs Check 2 **once** on the chosen candidate and
+  records `missing` (in the map, not in the candidate) and `extra` (in the candidate, not
+  in the map). It never changes the outcome. If no candidate passes Check 1, the run
+  escalates with `failed_check="check1"` and Check 2 does not run.
+
+The only way report-mode lists re-enter the loop is through a person — copying them into
+`--human-feedback` or `--reject`.
+
+**All published results (paper corpus, dataset, run77 ablation) used `gate` mode.**
+
 ### Human-in-the-loop re-entry
 
 | Trigger | Handler | Effect |
@@ -291,10 +323,14 @@ Key behaviors worth knowing:
 | `--reject --reason "…"` | `handle_reject` → `append_grade_rule` | encode the rejection as a persistent grade rule, then re-run |
 | `--re-extract --map-guidance "…"` | `handle_re_extract` → `save_extraction_guidance` | re-extract the concept-skill-map with guidance, then re-run |
 
+All three re-runs take `--check2-mode`; the dashboard's escalation panel reuses the
+escalated run's mode.
+
 ### Entry points, and which have a CLI
 
 `orchestrator.py`'s argparse exposes only `--board --subject --grade --chapter
---human-feedback --reject --reason --re-extract --map-guidance --prereq-csv --no-sync`.
+--human-feedback --reject --reason --re-extract --map-guidance --prereq-csv --no-sync
+--check2-mode`.
 There is no L2 or L3 flag — those stages are reachable only through the API (and therefore
 the dashboard), which imports the orchestrator's entry functions directly.
 
@@ -456,7 +492,10 @@ graph LR
 
 `run.json` records, per attempt: generator output, both eval checks, doctor/rules-doctor
 patches, revisions, the judge's selection, and pipeline-level usage — each tagged with
-model id, token usage, and USD cost. That is what makes per-agent, per-model performance
+model id, token usage, and USD cost. Full runs also record `check2_mode` (`"gate"` or
+`"report"`; `null` for prerequisite-only, L2 and L3 records) and `check2_report` (`null` in
+gate mode; in report mode the single Check 2 run's missing/extra lists, or
+`{"ran": false, "reason": …}`). In report mode each attempt's `check2` is `null`. That is what makes per-agent, per-model performance
 comparison possible in the dashboard.
 
 ---

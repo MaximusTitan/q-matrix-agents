@@ -14,7 +14,17 @@ export function CheckStatus({ passed }: { passed: boolean | null | undefined }) 
 
 // A single check block: title + status, markdown feedback, and missing-concept /
 // missing-skill chips. Used for generator checks and for doctor re-eval checks.
+// `check === null` means the check did not run (Check 2 in report mode); undefined
+// means no data, rendered as the "—" status.
 export function CheckSummary({ title, check }: { title: string; check: CheckResult | null | undefined }) {
+  if (check === null) {
+    return (
+      <div className="rounded border border-border bg-card/60 p-3">
+        <span className="text-[11px] font-bold text-foreground/80">{title}</span>
+        <p className="mt-1 text-[11px] text-muted-foreground">Not run (report mode)</p>
+      </div>
+    );
+  }
   const passed = check?.passed;
   const feedback = check?.feedback ?? [];
   const missingConcepts = check?.missing_concepts ?? [];

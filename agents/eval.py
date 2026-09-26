@@ -122,18 +122,36 @@ def run(
     grade: str,
     chapter: str,
     model: str = DEFAULT_MODEL,
+    check2: bool = True,
 ) -> dict:
     """
     Run Check 1 and Check 2 in parallel.
     Both checks always run — neither is skipped based on the other's outcome.
 
+    Args:
+        check2: False runs Check 1 only (the orchestrator's report mode, where Check 2
+                runs once on the final candidate instead of on every CSV).
+
     Returns:
         Dict with keys:
             check1 (dict) — always present
-            check2 (dict) — always present
-            passed (bool) — True only if both checks pass
+            check2 (dict) — present unless check2=False, then None
+            passed (bool) — True only if both checks pass (Check 1 alone when check2=False)
     """
     print(f"[eval] Starting: {board}/{subject}/{grade}/{chapter}")
+
+    if not check2:
+        print(f"[eval] Running Check 1 only (Check 2 deferred to the report)")
+        check1 = run_check1(csv, board, subject, grade, chapter, model)
+        return {
+            "check1": check1,
+            "check2": None,
+            "passed": check1["passed"],
+            "usage": check1.get("usage") or {},
+            "cost_usd": check1.get("cost_usd", 0.0),
+            "model": model,
+        }
+
     print(f"[eval] Running Check 1 and Check 2 in parallel...")
 
     with ThreadPoolExecutor(max_workers=2) as executor:

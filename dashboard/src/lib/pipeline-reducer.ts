@@ -28,7 +28,11 @@ export function reduceEvent(
   }
 
   if (type === "pipeline_started") {
-    return { ...state, status: "running" };
+    return {
+      ...state,
+      status: "running",
+      check2Mode: (data.check2_mode as PipelineState["check2Mode"]) ?? undefined,
+    };
   }
 
   if (type === "attempt_started") {

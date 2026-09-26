@@ -110,6 +110,11 @@ export interface EscalationData {
   error?: string;
 }
 
+// How Check 2 (concept-skill-map coverage) takes part in a full run — mirrors
+// orchestrator.py::CHECK2_MODES. "gate" (default) fails attempts and drives repair;
+// "report" runs Check 2 once on the final candidate as a review aid only.
+export type Check2Mode = "gate" | "report";
+
 export interface PipelineState {
   runId: string | null;
   status: PipelineStatus;
@@ -123,6 +128,8 @@ export interface PipelineState {
   selectedBy?: "single" | "judge";
   source?: "generated" | "doctored" | "user_provided";
   candidateCount?: number;
+  // Check 2 mode of the run, from its pipeline_started event (full runs only).
+  check2Mode?: Check2Mode;
 }
 
 export interface RunFormValues {
@@ -152,6 +159,7 @@ export interface QueueItem extends RunFormValues {
   // the full generate pipeline — mirrors StartRunOptions.l3Prerequisite.
   l3Prerequisite?: boolean;
   models?: Partial<Record<AgentKey, string>>;
+  check2Mode?: Check2Mode;
 }
 
 export interface RunMetadata {
@@ -545,4 +553,7 @@ export interface StartRunOptions extends RunFormValues {
   // pipeline default server-side. Not part of RunFormValues/QueueItem — batch-queued
   // chapters always use the pipeline default unless explicitly set here per-run.
   models?: Partial<Record<AgentKey, string>>;
+  // Full-pipeline runs only (generate / resume / re-extract / reject); defaults to
+  // "gate" server-side when omitted.
+  check2Mode?: Check2Mode;
 }

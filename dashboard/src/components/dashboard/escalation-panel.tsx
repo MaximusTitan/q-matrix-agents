@@ -7,7 +7,14 @@ import remarkGfm from "remark-gfm";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import type { AttemptRecord, CheckResult, EscalationData, RunFormValues, StartRunOptions } from "@/lib/types";
+import type {
+  AttemptRecord,
+  Check2Mode,
+  CheckResult,
+  EscalationData,
+  RunFormValues,
+  StartRunOptions,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { DoctorTrail } from "./shared/doctor-trail";
 import { doctorStepsFromAgents } from "@/lib/doctor-trail";
@@ -16,12 +23,23 @@ interface EscalationPanelProps {
   form: RunFormValues;
   escalation: EscalationData;
   attempts: AttemptRecord[];
+  // The escalated run's Check 2 mode — every re-run offered here keeps it.
+  check2Mode?: Check2Mode;
   onStart: (options: StartRunOptions) => void;
 }
 
 // ── Per-check block ────────────────────────────────────────────────────────────
 
-function CheckBlock({ title, check }: { title: string; check: CheckResult | undefined }) {
+function CheckBlock({ title, check }: { title: string; check: CheckResult | null | undefined }) {
+  // null = the check did not run on this attempt (Check 2 in report mode).
+  if (check === null) {
+    return (
+      <div className="rounded border border-border bg-card/60 p-3">
+        <span className="text-[11px] font-bold text-foreground/80">{title}</span>
+        <p className="mt-1 text-[11px] text-muted-foreground">Not run (report mode)</p>
+      </div>
+    );
+  }
   const passed = check?.passed;
   const feedback = check?.feedback ?? [];
   const missingConcepts = check?.missing_concepts ?? [];
@@ -99,7 +117,7 @@ function FailureDetails({
     .map((a) => {
       const evalAgent = a.agents.find((ag) => ag.name === "Eval" && ag.output);
       const c1 = evalAgent?.output?.check1 as CheckResult | undefined;
-      const c2 = evalAgent?.output?.check2 as CheckResult | undefined;
+      const c2 = evalAgent?.output?.check2 as CheckResult | null | undefined;
       return { attempt: a.attempt, c1, c2, doctorSteps: doctorStepsFromAgents(a.agents) };
     })
     .filter(({ c1, c2, doctorSteps }) => c1 !== undefined || c2 !== undefined || doctorSteps.length > 0);
@@ -136,9 +154,9 @@ function FailureDetails({
                 </span>
                 <span className={cn(
                   "text-[10px] font-bold",
-                  c1?.passed && c2?.passed ? "text-[var(--qm-green)]" : "text-[var(--qm-red)]"
+                  c1?.passed && (c2 === null || c2?.passed) ? "text-[var(--qm-green)]" : "text-[var(--qm-red)]"
                 )}>
-                  {c1?.passed && c2?.passed ? "✓ Passed" : "✗ Failed"}
+                  {c1?.passed && (c2 === null || c2?.passed) ? "✓ Passed" : "✗ Failed"}
                 </span>
               </div>
               <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
@@ -156,24 +174,24 @@ function FailureDetails({
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export function EscalationPanel({ form, escalation, attempts, onStart }: EscalationPanelProps) {
+export function EscalationPanel({ form, escalation, attempts, check2Mode, onStart }: EscalationPanelProps) {
   const [feedback, setFeedback] = useState("");
   const [mapGuidance, setMapGuidance] = useState("");
   const [rejectReason, setRejectReason] = useState("");
 
   const resumeWithFeedback = () => {
     if (!feedback.trim()) { alert("Please enter feedback."); return; }
-    onStart({ ...form, humanFeedback: feedback.trim() });
+    onStart({ ...form, humanFeedback: feedback.trim(), check2Mode });
   };
 
   const reExtract = () => {
     if (!mapGuidance.trim()) { alert("Please enter map guidance."); return; }
-    onStart({ ...form, mapGuidance: mapGuidance.trim() });
+    onStart({ ...form, mapGuidance: mapGuidance.trim(), check2Mode });
   };
 
   const rejectRun = () => {
     if (!rejectReason.trim()) { alert("Please enter a rejection reason."); return; }
-    onStart({ ...form, rejectReason: rejectReason.trim() });
+    onStart({ ...form, rejectReason: rejectReason.trim(), check2Mode });
   };
 
   return (

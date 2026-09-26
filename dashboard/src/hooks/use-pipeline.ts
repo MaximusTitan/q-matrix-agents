@@ -67,7 +67,7 @@ export function usePipeline({ onRunComplete }: UsePipelineOptions = {}) {
       const {
         board, subject, grade, chapter,
         humanFeedback, mapGuidance, rejectReason, curriculumCsv,
-        l2Prerequisite, l3Prerequisite, models,
+        l2Prerequisite, l3Prerequisite, models, check2Mode,
       } = options;
 
       // The "provide CSV" path derives identifiers server-side, so the KB fields are
@@ -87,6 +87,8 @@ export function usePipeline({ onRunComplete }: UsePipelineOptions = {}) {
 
       try {
         const base = { board, subject, grade, chapter, no_sync: true, models };
+        // Only the full-pipeline routes run Check 2, so only they take the mode.
+        const fullRun = { ...base, check2_mode: check2Mode ?? "gate" };
         let result: { run_id: string };
 
         if (curriculumCsv) {
@@ -96,13 +98,13 @@ export function usePipeline({ onRunComplete }: UsePipelineOptions = {}) {
         } else if (l3Prerequisite) {
           result = await postRunL3Prerequisite(base);
         } else if (humanFeedback) {
-          result = await postRun({ ...base, human_feedback: humanFeedback });
+          result = await postRun({ ...fullRun, human_feedback: humanFeedback });
         } else if (mapGuidance) {
-          result = await postReExtract({ ...base, map_guidance: mapGuidance });
+          result = await postReExtract({ ...fullRun, map_guidance: mapGuidance });
         } else if (rejectReason) {
-          result = await postReject({ ...base, reason: rejectReason });
+          result = await postReject({ ...fullRun, reason: rejectReason });
         } else {
-          result = await postRun(base);
+          result = await postRun(fullRun);
         }
 
         const { run_id } = result;

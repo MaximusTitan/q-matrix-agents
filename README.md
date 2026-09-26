@@ -134,7 +134,7 @@ START: Board · Subject · Grade · Chapter
   │     YES → Map Extraction Agent + Generator Agent run in PARALLEL
   │     NO  → Generator Agent only
   |
-  ├── Eval (Check 1 + Check 2, parallel)
+  ├── Eval (Check 1 + Check 2, parallel)             (gate mode — the default; see "Check 2 modes")
   │     both pass          → candidate
   │     one check fails    → Doctor / Rules Doctor patches it surgically → candidate
   │     both/still failing → Revision rewrites prompt (in-memory) → Generator → Eval
@@ -237,7 +237,7 @@ fuzzy matching. Use the same names the KB template uses:
 
 Not every stage has a CLI. `orchestrator.py`'s argparse exposes exactly these flags:
 `--board --subject --grade --chapter --human-feedback --reject --reason --re-extract
---map-guidance --prereq-csv --no-sync`. **There are no `--l2` / `--l3` flags.**
+--map-guidance --prereq-csv --no-sync --check2-mode`. **There are no `--l2` / `--l3` flags.**
 
 | Stage | CLI | API endpoint | Entry function |
 |---|---|---|---|
@@ -273,6 +273,37 @@ python orchestrator.py --reject --board CBSE --subject Science --grade "Grade 8"
 ```bash
 python orchestrator.py --re-extract --board CBSE --subject Science --grade "Grade 8" --chapter "Chapter04_Exploring_Forces" --map-guidance "Split 'Motion' and 'Force' into separate concepts"
 ```
+
+### Check 2 modes
+
+`--check2-mode` sets how Check 2 (concept-skill-map coverage) takes part in a full run —
+normal runs, `--human-feedback`, `--reject` and `--re-extract`. The API takes the same
+value as `check2_mode` on `POST /run`, `/reject` and `/re-extract`, and the dashboard's
+Generate form has a matching selector. It has no effect on `--prereq-csv`, L2 or L3, which
+never run Check 2.
+
+| | `gate` (default) | `report` |
+|---|---|---|
+| Check 2 runs | on every generated and doctored CSV | **once**, on the final candidate that passed Check 1 |
+| A Check 2 miss | fails the attempt | never fails the run |
+| Coverage Doctor | fixes Check-2-only failures | never called |
+| Missing items in retry feedback | given to the Generator and Revision by name | never — feedback is Check 1 only |
+| Rules Doctor / Judge | see the concept-skill-map | the map is withheld |
+| Plateau early stop | counts Check 1 violations + Check 2 missing items | counts Check 1 violations only |
+| Output | per-attempt Check 2 in `report.md` / `run.json` | a `Check 2 Report` section in `report.md` and `check2_report` in `run.json`: *missing* (in the map, not the candidate) and *extra* (in the candidate, not the map) |
+
+In report mode a Check 1 failure goes to the Rules Doctor, then to Revision if that repair
+fails, exactly as a Check-1-only failure does in gate mode. If no candidate ever passes
+Check 1 the run escalates (`failed_check: check1`) and Check 2 does not run. Each
+`run.json` records `check2_mode` (`null` for prerequisite-only, L2 and L3 records).
+
+Report mode keeps the concept-skill-map from shaping the CSV, so the output shows what
+the pipeline produces without being shown the target. Its lists are there for a human to
+review. A person who copies them into `--human-feedback` or `--reject` sends them back
+into the loop — that is the designed human-in-the-loop path, not something the mode blocks.
+
+**All published results — the paper corpus, the dataset in `q-matrix-dataset`, and the
+run77 ablation — used `gate` mode.**
 
 ### KB sync — CLI only
 
@@ -318,11 +349,13 @@ functions and `pytest` is not a dependency. Run them individually:
 ```bash
 python tests/test_skills.py
 python tests/test_prerequisite_l3.py
+python tests/test_check2_mode.py
 ```
 
 Most load `.env` and hit the real KB and/or the real Gateway, so they need a populated
-`.env` and will cost money. `tests/test_prerequisite_l3.py` is the exception — it stubs the
-LLM and runs offline.
+`.env` and will cost money. `tests/test_prerequisite_l3.py` and `tests/test_check2_mode.py`
+are the exceptions — they stub the LLM and run offline (`test_check2_mode.py` also points
+`KB_ROOT` at a temp directory, so it needs no `.env`).
 
 ---
 

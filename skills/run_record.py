@@ -21,6 +21,7 @@ Usage:
                        passed=False, regressed=False, regressed_concepts=[],
                        regressed_skills=[])
     builder.set_judge(...)
+    builder.set_check2_report(candidate_id=..., check2=c2)   # report mode only
     builder.finalize(final_status="passed", failed_check=None, final_csv=...,
                      final_csv_name="confirmed.csv", confirmed_checkpoint=True,
                      has_prereqs=True)
@@ -77,13 +78,16 @@ class RunRecordBuilder:
     attempts.
     """
 
-    def __init__(self, board, subject, grade, chapter, date, mode="full"):
+    # check2_mode is "gate" or "report" for full runs (see orchestrator.CHECK2_MODES) and
+    # None for modes that never run Check 2 (prerequisite-only, L2, L3).
+    def __init__(self, board, subject, grade, chapter, date, mode="full", check2_mode=None):
         self.board = board
         self.subject = subject
         self.grade = grade
         self.chapter = chapter
         self.date = date
         self.mode = mode
+        self.check2_mode = check2_mode
         self.run_id = (
             datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             + "-" + uuid.uuid4().hex[:6]
@@ -92,6 +96,7 @@ class RunRecordBuilder:
         self._judge: dict | None = None
         self._final: dict | None = None
         self._pipeline_agents: dict[str, dict] = {}
+        self._check2_report: dict | None = None
 
     # ── Accumulation ──────────────────────────────────────────────────────────
 
@@ -102,6 +107,9 @@ class RunRecordBuilder:
         ``usage``/``cost_usd``/``model`` are the Generator's OWN call — Eval's usage
         already rides through inside ``check1``/``check2`` (see agents/eval.py), so it
         needs no separate plumbing here.
+
+        ``check2`` is None in report mode, where Check 2 did not run on the attempt;
+        ``passed`` is then Check 1's result alone.
         """
         self._attempts[attempt] = {
             "attempt": attempt,
@@ -112,7 +120,7 @@ class RunRecordBuilder:
                 "rows": gen_rows,
                 "check1": check1,
                 "check2": check2,
-                "passed": bool(check1.get("passed") and check2.get("passed")),
+                "passed": bool(check1.get("passed") and (check2 is None or check2.get("passed"))),
                 "usage": usage or dict(_ZERO_USAGE),
                 "cost_usd": cost_usd,
                 "model": model,
@@ -205,6 +213,29 @@ class RunRecordBuilder:
             "candidates": candidates or [],
             "usage": usage or dict(_ZERO_USAGE),
             "cost_usd": cost_usd,
+            "model": model,
+        }
+
+    def set_check2_report(self, *, candidate_id, check2, model=None, error=None) -> None:
+        """Record report mode's single Check 2 run on the final candidate.
+
+        A review aid only: ``missing_*`` are map items not in the candidate, ``extra_*``
+        are candidate items not in the map. ``check2`` is None when the call errored.
+        Its usage/cost count towards the run totals.
+        """
+        c2 = check2 or {}
+        self._check2_report = {
+            "ran": check2 is not None,
+            "candidate_id": candidate_id,
+            "error": error,
+            "missing_concepts": c2.get("missing_concepts", []),
+            "missing_skills": c2.get("missing_skills", []),
+            "extra_concepts": c2.get("extra_concepts", []),
+            "extra_skills": c2.get("extra_skills", []),
+            "matched_concepts": c2.get("matched_concepts", {}),
+            "matched_skills": c2.get("matched_skills", {}),
+            "usage": c2.get("usage") or dict(_ZERO_USAGE),
+            "cost_usd": c2.get("cost_usd", 0.0),
             "model": model,
         }
 
@@ -371,6 +402,17 @@ class RunRecordBuilder:
             total_usage = add_usage(total_usage, pipeline_entry["usage"])
             total_cost_usd += pipeline_entry["cost_usd"]
 
+        # ── Check 2 report — null in gate mode; in report mode, the single Check 2
+        # run on the final candidate, or ran=false when no candidate passed Check 1 ──
+        check2_report = None
+        if self.check2_mode == "report":
+            check2_report = self._check2_report or {
+                "ran": False, "reason": "no candidate passed Check 1",
+            }
+            if self._check2_report:
+                total_usage = add_usage(total_usage, self._check2_report["usage"])
+                total_cost_usd += self._check2_report["cost_usd"]
+
         record = {
             "schema_version": SCHEMA_VERSION,
             "run_id": self.run_id,
@@ -382,6 +424,8 @@ class RunRecordBuilder:
             "final_status": final["final_status"],
             "failed_check": final["failed_check"],
             "mode": self.mode,
+            "check2_mode": self.check2_mode,
+            "check2_report": check2_report,
             "selected_by": self._judge["selected_by"] if self._judge else None,
             "candidate_count": self._judge["candidate_count"] if self._judge else 0,
             "judge": judge_out,
