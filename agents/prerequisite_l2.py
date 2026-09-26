@@ -32,13 +32,19 @@ edges the LLM returned directly.
 Input:  target_rows, candidate_pool, sibling_rows_by_chapter, board, subject, grade, chapter
 Output: dict {"rows", "concept_edges", "skill_edges", "warnings", "usage", "cost_usd"}
 
+With an evaluation model (skills.evaluate.is_evaluation_model) the single JSON call is
+replaced by a recall-biased per-candidate screen followed by one yes/no question per
+(target, surviving candidate) pair of the same kind — see skills/prereq_evaluator.py.
+
 Skills used:
-    llm — call_llm
+    llm              — call_llm (chat models)
+    prereq_evaluator — map_cross (evaluation models)
 """
 
 import json
 import os
 from skills.llm import call_llm, add_usage, DEFAULT_MODEL
+from skills import evaluate, prereq_evaluator
 
 L2_CONCEPT_COL = "prereq_concepts_L2_cross_chapter"
 L2_SKILL_COL   = "prereq_skills_L2_cross_chapter"
@@ -129,6 +135,71 @@ def _extract_cross_chapter_edges(
     return edges, warnings
 
 
+def _map_with_llm(target_concepts, target_skills, candidate_pool, board, subject, grade, chapter, model):
+    """One chat-LLM call (retried once on unparseable output) → (parsed | None, usage, cost)."""
+    candidate_lines = []
+    for sibling_chapter, pool in candidate_pool.items():
+        for c in pool.get("concepts", []):
+            candidate_lines.append(f'CONCEPT: "{c}" (from {sibling_chapter})')
+        for s in pool.get("skills", []):
+            candidate_lines.append(f'SKILL: "{s}" (from {sibling_chapter})')
+
+    user_content = f"""board: {board}
+subject: {subject}
+grade: {grade}
+target chapter: {chapter}
+
+--- TARGET CHAPTER CONCEPTS ---
+{json.dumps(target_concepts, indent=2)}
+
+--- TARGET CHAPTER SKILLS ---
+{json.dumps(target_skills, indent=2)}
+
+--- CANDIDATE POOL (from other chapters, already screened for relevance) ---
+{chr(10).join(candidate_lines)}"""
+
+    usage_total = {}
+    cost_total = 0.0
+    for attempt in range(2):
+        raw, usage, cost = call_llm(SYSTEM_PROMPT, user_content, model=model)
+        usage_total = add_usage(usage_total, usage)
+        cost_total += cost
+        parsed = _parse_llm_json(raw)
+        if isinstance(parsed, dict):
+            return parsed, usage_total, cost_total
+        print(f"[prerequisite_l2] Retrying — invalid output ({attempt + 1}/2)")
+    return None, usage_total, cost_total
+
+
+def _map_with_evaluator(target_concepts, target_skills, candidate_pool, board, subject, grade, chapter, model):
+    """
+    Screen + pairwise yes/no questions on an evaluation model (skills/prereq_evaluator.py),
+    returned in the chat-LLM JSON shape.
+
+    Returns (parsed | None, usage, cost, warnings). On evaluation failure parsed is None
+    and the warning says why, so the caller writes empty columns (same as the LLM path).
+    """
+    context = {"board": board, "subject": subject, "grade": grade, "chapter": chapter}
+    candidates = [
+        {"key": f"{kind}␟" + _edge_key(ch, item), "kind": kind, "text": item,
+         "source": ch, "fields": {"chapter": ch}}
+        for ch, pool in candidate_pool.items()
+        for kind, plural in (("concept", "concepts"), ("skill", "skills"))
+        for item in pool.get(plural, [])
+    ]
+    try:
+        by_kind, usage, cost, kept = prereq_evaluator.map_cross(
+            context, target_concepts, target_skills, candidates, model
+        )
+    except (evaluate.EvaluationError, ValueError) as e:
+        print(f"[prerequisite_l2] Evaluation failed: {e}")
+        return None, {}, 0.0, [
+            f"Evaluation model call failed ({e}) — wrote empty L2 prerequisite columns."
+        ]
+    print(f"[prerequisite_l2] Screen kept {kept}/{len(candidates)} candidate item(s)")
+    return prereq_evaluator.cross_parsed(by_kind), usage, cost, []
+
+
 def run(
     target_rows: list[dict],
     candidate_pool: dict[str, dict],
@@ -198,43 +269,20 @@ def run(
             "cost_usd": 0.0,
         }
 
-    candidate_lines = []
-    for sibling_chapter, pool in candidate_pool.items():
-        for c in pool.get("concepts", []):
-            candidate_lines.append(f'CONCEPT: "{c}" (from {sibling_chapter})')
-        for s in pool.get("skills", []):
-            candidate_lines.append(f'SKILL: "{s}" (from {sibling_chapter})')
-
-    user_content = f"""board: {board}
-subject: {subject}
-grade: {grade}
-target chapter: {chapter}
-
---- TARGET CHAPTER CONCEPTS ---
-{json.dumps(target_concepts, indent=2)}
-
---- TARGET CHAPTER SKILLS ---
-{json.dumps(target_skills, indent=2)}
-
---- CANDIDATE POOL (from other chapters, already screened for relevance) ---
-{chr(10).join(candidate_lines)}"""
-
-    parsed = None
-    usage_total = {}
-    cost_total = 0.0
-    for attempt in range(2):
-        raw, usage, cost = call_llm(SYSTEM_PROMPT, user_content, model=model)
-        usage_total = add_usage(usage_total, usage)
-        cost_total += cost
-        parsed = _parse_llm_json(raw)
-        if isinstance(parsed, dict):
-            break
-        print(f"[prerequisite_l2] Retrying — invalid output ({attempt + 1}/2)")
-        parsed = None
-
     warnings = []
+    if evaluate.is_evaluation_model(model):
+        parsed, usage_total, cost_total, eval_warnings = _map_with_evaluator(
+            target_concepts, target_skills, candidate_pool, board, subject, grade, chapter, model
+        )
+        warnings.extend(eval_warnings)
+    else:
+        parsed, usage_total, cost_total = _map_with_llm(
+            target_concepts, target_skills, candidate_pool, board, subject, grade, chapter, model
+        )
+        if parsed is None:
+            warnings.append("LLM output unusable after retry — wrote empty L2 prerequisite columns.")
+
     if parsed is None:
-        warnings.append("LLM output unusable after retry — wrote empty L2 prerequisite columns.")
         concept_edges: dict[str, list[dict]] = {}
         skill_edges: dict[str, list[dict]] = {}
     else:

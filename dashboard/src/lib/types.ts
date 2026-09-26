@@ -22,6 +22,9 @@ export interface ModelInfo {
   context_window: number;
   tags: string[]; // includes "tool-use" when the model supports forced tool calls
   pricing: ModelPricing;
+  // "evaluation" models (e.g. typesafe-ai/jev) answer typed questions instead of
+  // generating text — only EVALUATION_AGENTS (lib/models.ts) can run on them.
+  type: "language" | "evaluation";
 }
 
 // One entry per orchestrator.AGENT_KEYS — keep in sync with orchestrator.py.
@@ -29,6 +32,7 @@ export const AGENT_KEYS = [
   "map_extraction",
   "generator",
   "eval",
+  "eval_coverage",
   "doctor",
   "rules_doctor",
   "revision",
@@ -36,6 +40,7 @@ export const AGENT_KEYS = [
   "prerequisite",
   "prerequisite_l2",
   "prerequisite_l3",
+  "chapter_relevance",
 ] as const;
 
 export type AgentKey = (typeof AGENT_KEYS)[number];

@@ -30,13 +30,15 @@ const AGENT_DEFAULT_MODELS: Record<AgentKey, string> = {
   map_extraction: "anthropic/claude-sonnet-5",
   generator: "anthropic/claude-sonnet-5",
   eval: "anthropic/claude-sonnet-5",
-  doctor: "openai/gpt-5.4-mini",
-  rules_doctor: "openai/gpt-5.4-mini",
-  revision: "openai/gpt-5.4-mini",
-  judge: "openai/gpt-5.4-mini",
+  eval_coverage: "typesafe-ai/jev",
+  doctor: "anthropic/claude-sonnet-5",
+  rules_doctor: "anthropic/claude-sonnet-5",
+  revision: "anthropic/claude-sonnet-5",
+  judge: "typesafe-ai/jev",
   prerequisite: "anthropic/claude-sonnet-5",
   prerequisite_l2: "anthropic/claude-sonnet-5",
   prerequisite_l3: "anthropic/claude-sonnet-5",
+  chapter_relevance: "typesafe-ai/jev",
 };
 
 interface RunFormProps {

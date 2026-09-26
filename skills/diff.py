@@ -26,12 +26,27 @@ Coverage runs in two passes:
            trail — it does NOT gate what the LLM sees, so lexically-distant but
            semantically-equivalent phrasings are still recovered. The LLM has
            final say and is told not to over-merge genuinely different items.
+
+With an evaluation model (skills.evaluate.is_evaluation_model) there is no pass 2:
+case-insensitive exact matches are settled in code, every other expected item gets its
+own yes/no "covered in meaning?" question (so no item can silently go unjudged), and each
+covered item gets one choice question to name the actual item(s) covering it.
 """
 
 import json
 import re
 from skills.csv_utils import parse_csv
 from skills.llm import call_llm_structured, add_usage, DEFAULT_MODEL
+from skills import evaluate
+
+# Evaluation-model path: an expected item is covered at or above this probability, and a
+# choice option at or above _COVER_OPTION_FLOOR is listed as (one of) its covering items.
+# Calibrated 2026-09-27 against Sonnet 5 Check 2 verdicts on 63 escalated attempts: 0.6
+# gave 81% pass/fail agreement (0.5: 71%, 0.7: 83% but 2 of 12 confirmed CBSE EVS Grade 3
+# chapters then failed; 0.6 passed all 12). Item-level agreement on WHICH skills are
+# missing is much weaker (mean Jaccard 0.22) — the Doctor sees Jev's list, not Sonnet's.
+COVERAGE_THRESHOLD = 0.6
+_COVER_OPTION_FLOOR = 0.2
 
 
 # A dict keyed by arbitrary expected-item strings (not known ahead of time), each
@@ -313,6 +328,63 @@ def _reconcile(
     }
 
 
+def _coverage_with_evaluator(kind: str, expected: list, actual: list, model: str):
+    """
+    Evaluation-model coverage for one kind ("concept" or "skill").
+
+    Returns (missing, matched, usage, cost_usd) with matched = {expected: [actual, ...]}.
+    """
+    by_lower = {}
+    for a in actual:
+        by_lower.setdefault(a.strip().lower(), a)
+    matched = {e: [by_lower[e.strip().lower()]] for e in expected if e.strip().lower() in by_lower}
+    pending = [e for e in expected if e not in matched]
+    if not pending or not actual:
+        return pending, matched, {}, 0.0
+
+    plural = f"actual_{kind}s"
+    state = {plural: actual}
+    covered_q = {
+        f"e{i}": evaluate.boolean(
+            f'Is the expected {kind} "{e}" covered in meaning by one or more of the '
+            f"items in `{plural}`?",
+            true=f"Some {kind}(s) in the list cover the same topic or intent, even if worded "
+                 f"differently, singular/plural, truncated, or split across several items.",
+            false=f"No {kind} in the list covers it; the closest items are related but "
+                  f"genuinely different.",
+        )
+        for i, e in enumerate(pending)
+    }
+    answers, usage, cost = evaluate.evaluate_many([(state, covered_q)], model)
+    covered, missing = [], []
+    for i, e in enumerate(pending):
+        if evaluate.probability(answers[f"e{i}"]) >= COVERAGE_THRESHOLD:
+            covered.append((i, e))
+        else:
+            missing.append(e)
+    if not covered:
+        return missing, matched, usage, cost
+
+    if len(actual) < 2:
+        for _, e in covered:
+            matched[e] = list(actual)
+        return missing, matched, usage, cost
+
+    options = {f"a{j}": a for j, a in enumerate(actual)}
+    which_q = {
+        f"w{i}": evaluate.choice(f'Which item in `{plural}` best covers the expected {kind} "{e}"?', options)
+        for i, e in covered
+    }
+    answers, usage2, cost2 = evaluate.evaluate_many([(state, which_q)], model)
+    for i, e in covered:
+        answer = answers[f"w{i}"]
+        probs = answer.get("probabilities") or {}
+        picked = [options[k] for k, p in sorted(probs.items(), key=lambda kv: -kv[1])
+                  if k in options and p >= _COVER_OPTION_FLOOR]
+        matched[e] = picked or [options[answer["choice"]]]
+    return missing, matched, add_usage(usage, usage2), cost + cost2
+
+
 def diff_full(raw_csv: str, concept_skill_map: dict, model: str = DEFAULT_MODEL) -> dict:
     """
     Semantically diff a generated CSV against a concept-skill-map.
@@ -349,6 +421,21 @@ def diff_full(raw_csv: str, concept_skill_map: dict, model: str = DEFAULT_MODEL)
     # Extract flat lists from CSV
     actual_concepts = list({row["concept"].strip() for row in rows})
     actual_skills   = list({row["skill"].strip()   for row in rows})
+
+    if evaluate.is_evaluation_model(model):
+        missing_concepts, matched_concepts, u_c, cost_c = _coverage_with_evaluator(
+            "concept", expected_concepts, sorted(actual_concepts), model
+        )
+        missing_skills, matched_skills, u_s, cost_s = _coverage_with_evaluator(
+            "skill", expected_skills, sorted(actual_skills), model
+        )
+        return _result(
+            actual_concepts, actual_skills, missing_concepts, missing_skills,
+            matched_concepts, matched_skills, {"concepts": {}, "skills": {}},
+            reasoning=(f"Evaluation model: each expected item judged individually "
+                       f"(covered at p ≥ {COVERAGE_THRESHOLD})."),
+            usage=add_usage(u_c, u_s), cost_usd=cost_c + cost_s, model=model,
+        )
 
     user_content = f"""EXPECTED (from chapter map):
 Concepts: {json.dumps(expected_concepts, indent=2)}
@@ -387,9 +474,18 @@ Skills:   {json.dumps(actual_skills, indent=2)}"""
                 missing_skills.remove(expected)
                 matched_skills[expected] = covering
 
-        # Recompute extras after any reclassification
-        extra_concepts = _compute_extras(actual_concepts, matched_concepts)
-        extra_skills   = _compute_extras(actual_skills,   matched_skills)
+    return _result(
+        actual_concepts, actual_skills, missing_concepts, missing_skills,
+        matched_concepts, matched_skills, reconciliation,
+        reasoning=reasoning, usage=usage_total, cost_usd=cost_total, model=model,
+    )
+
+
+def _result(actual_concepts, actual_skills, missing_concepts, missing_skills,
+            matched_concepts, matched_skills, reconciliation, *, reasoning, usage, cost_usd, model):
+    """Assemble diff_full's return dict (extras and feedback are derived here)."""
+    extra_concepts = _compute_extras(actual_concepts, matched_concepts)
+    extra_skills   = _compute_extras(actual_skills,   matched_skills)
 
     feedback = []
     if missing_concepts:
@@ -414,7 +510,7 @@ Skills:   {json.dumps(actual_skills, indent=2)}"""
         "reconciliation":   reconciliation,
         "feedback":         feedback,
         "reasoning":        reasoning,
-        "usage":            usage_total,
-        "cost_usd":         cost_total,
+        "usage":            usage,
+        "cost_usd":         cost_usd,
         "model":            model,
     }

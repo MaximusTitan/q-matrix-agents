@@ -23,14 +23,20 @@ derivation and any concept edges the LLM returned directly.
 Input:  rows (parsed confirmed CSV), board, subject, grade, chapter
 Output: dict {"rows", "concept_edges", "skill_edges", "warnings"}
 
+With an evaluation model (skills.evaluate.is_evaluation_model) the single JSON call is
+replaced by one yes/no question per (target, candidate) pair of the same kind — see
+skills/prereq_evaluator.py — and cycles are broken in code, keeping the stronger edge.
+
 Skills used:
-    llm — call_llm
+    llm             — call_llm (chat models)
+    prereq_evaluator — judge_pairs, break_cycles (evaluation models)
 """
 
 import json
 import os
 from skills.llm import call_llm, add_usage, DEFAULT_MODEL
 from skills.csv_utils import csv_to_text
+from skills import evaluate, prereq_evaluator
 
 # Level-1 column names. Levels 2-4 will add their own (e.g. *_L2_cross_chapter).
 L1_CONCEPT_COL = "prereq_concepts_L1_same_chapter"
@@ -111,6 +117,63 @@ def _extract_edges(parsed: dict, key: str, target_field: str, valid: set) -> dic
     return edges, warnings
 
 
+def _map_with_llm(rows, board, subject, grade, chapter, model):
+    """One chat-LLM call (retried once on unparseable output) → (parsed | None, usage, cost)."""
+    user_content = f"""board: {board}
+subject: {subject}
+grade: {grade}
+chapter: {chapter}
+
+--- CONFIRMED CSV ---
+{csv_to_text(rows)}"""
+
+    usage_total = {}
+    cost_total = 0.0
+    for attempt in range(2):
+        raw, usage, cost = call_llm(SYSTEM_PROMPT, user_content, model=model)
+        usage_total = add_usage(usage_total, usage)
+        cost_total += cost
+        parsed = _parse_llm_json(raw)
+        if isinstance(parsed, dict):
+            return parsed, usage_total, cost_total
+        print(f"[prerequisite] Retrying — invalid output ({attempt + 1}/2)")
+    return None, usage_total, cost_total
+
+
+def _map_with_evaluator(concepts, skills, board, subject, grade, chapter, model):
+    """
+    Pairwise yes/no questions on an evaluation model, returned in the chat-LLM JSON shape.
+
+    Returns (parsed | None, usage, cost, warnings). On evaluation failure parsed is None
+    and the warning says why, so the caller writes empty columns (same as the LLM path).
+    """
+    context = {"board": board, "subject": subject, "grade": grade, "chapter": chapter}
+    usage_total = {}
+    cost_total = 0.0
+    parsed = {}
+    warnings = []
+    try:
+        for kind, items, key in (("concept", concepts, "concept_prerequisites"),
+                                 ("skill", skills, "skill_prerequisites")):
+            candidates = [{"text": it} for it in items]
+            edges, usage, cost = prereq_evaluator.judge_pairs(context, kind, items, candidates, model)
+            usage_total = add_usage(usage_total, usage)
+            cost_total += cost
+            warnings.extend(prereq_evaluator.break_cycles(edges))
+            parsed[key] = [
+                {kind: target, "prerequisites": [
+                    {"item": cand["text"], "reason": prereq_evaluator.reason(p)} for cand, p in pairs
+                ]}
+                for target, pairs in edges.items()
+            ]
+    except (evaluate.EvaluationError, ValueError) as e:
+        print(f"[prerequisite] Evaluation failed: {e}")
+        return None, usage_total, cost_total, [
+            f"Evaluation model call failed ({e}) — wrote empty prerequisite columns."
+        ]
+    return parsed, usage_total, cost_total, warnings
+
+
 def run(
     rows: list[dict],
     board: str,
@@ -145,30 +208,18 @@ def run(
     print(f"[prerequisite] Mapping L1 within-chapter prerequisites "
           f"({len(concepts)} concepts, {len(skills)} skills)")
 
-    user_content = f"""board: {board}
-subject: {subject}
-grade: {grade}
-chapter: {chapter}
-
---- CONFIRMED CSV ---
-{csv_to_text(rows)}"""
-
-    parsed = None
-    usage_total = {}
-    cost_total = 0.0
-    for attempt in range(2):
-        raw, usage, cost = call_llm(SYSTEM_PROMPT, user_content, model=model)
-        usage_total = add_usage(usage_total, usage)
-        cost_total += cost
-        parsed = _parse_llm_json(raw)
-        if isinstance(parsed, dict):
-            break
-        print(f"[prerequisite] Retrying — invalid output ({attempt + 1}/2)")
-        parsed = None
-
     warnings = []
+    if evaluate.is_evaluation_model(model):
+        parsed, usage_total, cost_total, eval_warnings = _map_with_evaluator(
+            concepts, skills, board, subject, grade, chapter, model
+        )
+        warnings.extend(eval_warnings)
+    else:
+        parsed, usage_total, cost_total = _map_with_llm(rows, board, subject, grade, chapter, model)
+        if parsed is None:
+            warnings.append("LLM output unusable after retry — wrote empty prerequisite columns.")
+
     if parsed is None:
-        warnings.append("LLM output unusable after retry — wrote empty prerequisite columns.")
         concept_edges = {}
         skill_edges = {}
     else:

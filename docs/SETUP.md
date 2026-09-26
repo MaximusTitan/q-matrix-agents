@@ -96,9 +96,11 @@ is where every cost figure in this repo comes from.
 2. Make sure the account has credit. Agents fail mid-run if it does not.
 3. Put it in `.env` as `AI_GATEWAY_API_KEY` (next step).
 
-The default model is `anthropic/claude-sonnet-5` (`skills/llm.py:DEFAULT_MODEL`). The
-dashboard's run form lets you override the model per agent; the CLI always uses the
-default.
+Most agents default to `anthropic/claude-sonnet-5`. Three decision steps — Check 2
+(coverage), the judge, and the chapter-relevance screen — default to `typesafe-ai/jev`, an
+evaluation model reached through the same key on the Gateway's `/v1/evaluate` endpoint.
+Defaults, and the calibration behind them, live in `orchestrator.py:AGENT_DEFAULT_MODELS`. The dashboard's run form lets you
+override the model per agent; the CLI always uses the defaults.
 
 **This key is billable.** There is no dry-run mode.
 
@@ -478,8 +480,10 @@ median. Total across all 685 recorded runs: **$216.77**.
 
 What moves these numbers:
 
-- **Model choice.** Everything above used the defaults, `anthropic/claude-sonnet-5`
-  unless overridden. A cheaper model per agent lowers cost; the dashboard's per-agent
+- **Model choice.** Every figure above was recorded before Check 2, the judge and the
+  chapter-relevance screen moved to `typesafe-ai/jev` (billed on input tokens only, $0.042
+  per 1M), and before doctor/rules doctor/revision moved from gpt-5.4-mini to Sonnet 5.
+  Re-measure from `run.json` rather than trusting these medians for new runs. A cheaper model per agent lowers cost; the dashboard's per-agent
   picker is where you set that.
 - **Chapter length.** The whole chapter PDF and all curriculum docs go into the prompts.
 - **Revision attempts.** A chapter that passes on attempt 1 is far cheaper than one that

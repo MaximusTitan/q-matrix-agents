@@ -166,8 +166,9 @@ async def list_models():
     """
     Proxy the Gateway's model catalog for the dashboard's per-agent model picker.
     Cached in-process for _MODELS_CACHE_TTL so every dashboard load doesn't refetch
-    ~300 models from the Gateway. Filtered to language models only (excludes image/
-    embedding/reranking/video models, which no agent here can use).
+    ~300 models from the Gateway. Filtered to language and evaluation models (excludes
+    image/embedding/reranking/video models, which no agent here can use). `type` is passed
+    through so the picker can offer evaluation models only to agents that support them.
     """
     now = time.time()
     if _models_cache["data"] is not None and now - _models_cache["fetched_at"] < _MODELS_CACHE_TTL:
@@ -196,9 +197,10 @@ async def list_models():
             "context_window": m.get("context_window", 0),
             "tags": m.get("tags", []),
             "pricing": m.get("pricing", {}),
+            "type": m["type"],
         }
         for m in models
-        if m.get("type") == "language"
+        if m.get("type") in ("language", "evaluation")
     ]
     data = {"models": filtered}
     _models_cache["data"] = data

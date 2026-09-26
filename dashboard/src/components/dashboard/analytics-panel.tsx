@@ -819,7 +819,8 @@ function AttemptInsightCard({
             <UsageBadge
               usage={sumUsage([gen.check1?.usage, gen.check2?.usage])}
               costUsd={(gen.check1?.cost_usd ?? 0) + (gen.check2?.cost_usd ?? 0)}
-              model={gen.check1?.model ?? gen.check2?.model}
+              // Check 1 and Check 2 can run on different models (eval / eval_coverage).
+              model={[...new Set([gen.check1?.model, gen.check2?.model].filter(Boolean))].join(" + ")}
             />
           </div>
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2">

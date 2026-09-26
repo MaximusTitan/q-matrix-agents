@@ -11,11 +11,12 @@ import {
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import type { AgentKey, ModelInfo } from "@/lib/types";
-import { AGENT_LABELS, supportsToolUse, TOOL_CALLING_AGENTS } from "@/lib/models";
+import { AGENT_LABELS, isEligibleModel } from "@/lib/models";
 
 // One agent's model dropdown, grouped by provider. Tool-calling agents (Generator,
-// Eval, Doctor, Doctor (rules)) only show models tagged "tool-use" — they force a
-// single tool call for schema-shaped output, which requires it.
+// Eval, Doctor, Doctor (rules)) only show chat models tagged "tool-use" — they force a
+// single tool call for schema-shaped output, which requires it. Evaluation models are
+// shown only to the agents that have an evaluation-model path.
 export function AgentModelPicker({
   agentKey,
   models,
@@ -29,7 +30,7 @@ export function AgentModelPicker({
   defaultModel: string;
   onChange: (modelId: string | undefined) => void;
 }) {
-  const eligible = TOOL_CALLING_AGENTS.has(agentKey) ? models.filter(supportsToolUse) : models;
+  const eligible = models.filter((m) => isEligibleModel(agentKey, m));
 
   const byProvider = new Map<string, ModelInfo[]>();
   for (const m of eligible) {

@@ -177,6 +177,9 @@ failure) is re-raised immediately with no retry.
 | `[llm] Rate limit hit (attempt 1/3). Retrying in 5s...` repeatedly, then `RuntimeError: LLM call failed after 3 attempts. Last error: …` | Sustained rate limiting — usually several pipeline runs in parallel against one key | Run chapters sequentially. Wait, then retry. `MAX_RETRIES` / `RETRY_DELAY` in `skills/llm.py` are the knobs if you must. |
 | `RuntimeError: Model response had no tool call (finish_reason=…)` | The chosen model does not properly support forced tool use, or hit its output limit (`finish_reason=length`) | Pick a model tagged for tool use in the Gateway catalog. The default `anthropic/claude-sonnet-5` is known-good. |
 | `openai.NotFoundError` naming a model id | A per-agent model override in the dashboard references a model the Gateway does not expose | Choose from the `/models` list rather than typing an id. |
+| `EvaluationError: HTTP 401/402/422: …` from `skills/evaluate.py` | An evaluation-model call (Check 2, judge, chapter relevance — or any decision agent pointed at Jev) was rejected: bad key (401), no credit (402), or a malformed question (422). Not retried | 401/402: same fixes as above. 422: the message names the bad field — usually a question text change in an agent. Prerequisite agents and chapter relevance catch this and write empty columns with a warning; eval surfaces it |
+| `[evaluate] HTTP 429/529 … Retrying in 5s...` then `EvaluationError: Evaluation failed after 3 attempts` | Rate limiting or TypeSafe overload. Large L2/L3 runs send many requests in parallel | Retry later, or lower `MAX_PARALLEL_REQUESTS` in `skills/evaluate.py` |
+| `ValueError: evaluation state too large (~N tokens, budget 30000)` | A single evaluation request would exceed Jev's 32k-token state limit (e.g. an unusually large chapter in Check 2 or the judge) | Point that agent at a chat model via `models`, or split the state in that agent |
 
 ---
 

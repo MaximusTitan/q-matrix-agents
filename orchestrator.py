@@ -56,6 +56,7 @@ from skills.git_sync import pull_kb, push_kb
 from skills.run_record import RunRecordBuilder
 from skills.report_render import render_report_md
 from skills.llm import DEFAULT_MODEL, add_usage
+from skills.evaluate import JEV_MODEL
 
 # Safety ceiling on generate→eval cycles. The loop also stops EARLY (before this cap)
 # once the generator stops closing gaps — see the adaptive-budget check in run_pipeline.
@@ -65,47 +66,64 @@ MAX_PLATEAU_ROUNDS = 2  # consecutive non-improving attempts before escalating e
 # Keys accepted in the `models` dict threaded through run_pipeline(...) — one per
 # agent, each defaulting to AGENT_DEFAULT_MODELS[key] when not supplied.
 AGENT_KEYS = (
-    "map_extraction", "generator", "eval", "doctor",
+    "map_extraction", "generator", "eval", "eval_coverage", "doctor",
     "rules_doctor", "revision", "judge", "prerequisite", "prerequisite_l2",
-    "prerequisite_l3",
+    "prerequisite_l3", "chapter_relevance",
 )
 
-# Per-agent defaults, used when the caller's `models` dict omits a key. Map Extraction,
-# Generator, and Eval default to Sonnet 5 — Sonnet produces noticeably fuller curriculum
-# CSVs (100+ rows) than gpt-5.4-mini (which undershoots at <50 rows), and the eval gate
-# needs a strong model to judge content rules reliably — every other agent defaults to
-# gpt-5.4-mini.
+# Per-agent defaults, used when the caller's `models` dict omits a key.
+#
+# `eval` is Check 1 (content rules); `eval_coverage` is Check 2 (CSM coverage). A caller
+# that sets only `eval` gets that model for both checks, as before the split.
+#
+# Jev (typesafe-ai/jev) is an evaluation model on the Gateway's /v1/evaluate endpoint:
+# it answers typed yes/no, choice and score questions and generates no text (see
+# skills/evaluate.py). Every decision agent has a Jev path, but it is the default only
+# where it held up against Sonnet 5 verdicts in calibration (2026-09-27; 63 escalated
+# attempts with stored Sonnet verdicts + 12 confirmed CBSE EVS Grade 3 chapters):
+#   - Check 2: 81% pass/fail agreement with Sonnet at COVERAGE_THRESHOLD 0.6, and every
+#     confirmed chapter passed → Jev.
+#   - Check 1: no threshold separated Sonnet-passed from Sonnet-failed CSVs (at 0.4:
+#     50% false fails, 64% of failures caught; R-SK6 duplicates never flagged) → Sonnet.
+#   - L1 prerequisites: 4 skill edges vs 171 stored at EDGE_THRESHOLD 0.8, 18% recall
+#     even at 0.5 → Sonnet, and L2/L3 with it (same pairwise question).
+# The judge and chapter relevance map directly onto Jev's primitives and stay on it.
+#
+# Everything that writes (maps, CSV rows, patches, prompts) is on Sonnet 5, which
+# produces noticeably fuller curriculum CSVs (100+ rows) than gpt-5.4-mini (<50 rows).
+# gpt-5.4-mini was also observed dropping or contradicting its own prerequisite edges
+# (CBSE/Environmental Science/Grade 5/Chapter02_Journey_of_a_River and CBSE/Maths/
+# Grade 10/Chapter01_Real_Numbers, 2026-07-21).
+#
+# Prerequisite edges stay unverified on any model.
 AGENT_DEFAULT_MODELS = {
-    "map_extraction": "anthropic/claude-sonnet-5",
-    "generator":       "anthropic/claude-sonnet-5",
-    "eval":            "anthropic/claude-sonnet-5",
-    "doctor":          "openai/gpt-5.4-mini",
-    "rules_doctor":    "openai/gpt-5.4-mini",
-    "revision":        "openai/gpt-5.4-mini",
-    "judge":           "openai/gpt-5.4-mini",
-    # gpt-5.4-mini was observed returning a near-empty response (17 output tokens,
-    # zero edges asserted) for CBSE/Environmental Science/Grade 5/Chapter02_Journey_
-    # of_a_River, versus 200-2000+ tokens and real edges for every sibling chapter
-    # in the same book; sonnet-5 found 15 skill + 10 concept edges on a re-run,
-    # 2026-07-21.
-    "prerequisite":    "anthropic/claude-sonnet-5",
-    # L2 needs to judge many cross-chapter candidates and reliably act on its own
-    # accept/reject reasoning within one large structured response — gpt-5.4-mini
-    # was observed asserting edges its own stated reason explicitly rejected
-    # (e.g. CBSE/Maths/Grade 10/Chapter01_Real_Numbers, 2026-07-21); sonnet-5
-    # confirmed correct (zero false-positive edges) on the same chapter.
-    "prerequisite_l2": "anthropic/claude-sonnet-5",
-    # L3's candidate pool spans every earlier grade and its prompt carries the extra
-    # "reject long-assumed foundational skills" judgment call on top of everything L2
-    # already has to get right — defaults to the same model as L2 pending its own
-    # dedicated evaluation; revisit once L3 has real run data.
-    "prerequisite_l3": "anthropic/claude-sonnet-5",
+    "map_extraction":    "anthropic/claude-sonnet-5",
+    "generator":         "anthropic/claude-sonnet-5",
+    "eval":              "anthropic/claude-sonnet-5",
+    "eval_coverage":     JEV_MODEL,
+    "doctor":            "anthropic/claude-sonnet-5",
+    "rules_doctor":      "anthropic/claude-sonnet-5",
+    "revision":          "anthropic/claude-sonnet-5",
+    "judge":             JEV_MODEL,
+    "prerequisite":      "anthropic/claude-sonnet-5",
+    "prerequisite_l2":   "anthropic/claude-sonnet-5",
+    "prerequisite_l3":   "anthropic/claude-sonnet-5",
+    "chapter_relevance": JEV_MODEL,
 }
 
 
 def _model_for(models: dict | None, key: str) -> str:
-    return (models or {}).get(key) or AGENT_DEFAULT_MODELS.get(key, DEFAULT_MODEL)
+    models = models or {}
+    if key == "eval_coverage" and not models.get(key) and models.get("eval"):
+        return models["eval"]  # pre-split callers set one model for both checks
+    return models.get(key) or AGENT_DEFAULT_MODELS.get(key, DEFAULT_MODEL)
 
+
+
+def _eval_models_label(models: dict | None) -> str:
+    """Model id(s) behind one Eval step — Check 1 and Check 2 may run on different models."""
+    rules, coverage = _model_for(models, "eval"), _model_for(models, "eval_coverage")
+    return rules if rules == coverage else f"{rules} + {coverage}"
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -304,7 +322,8 @@ def run_prerequisite_only(csv_text: str, emit=None, models: dict | None = None) 
     return {"passed": True, "csv": final_csv, "checkpoint": checkpoint}
 
 
-def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAULT_MODEL):
+def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAULT_MODEL,
+                               relevance_model=JEV_MODEL):
     """
     Run Level-2 (cross-chapter, same grade+subject) prerequisite mapping for one
     target chapter, persist the enriched CSV checkpoint, and emit PrerequisitesL2
@@ -314,10 +333,14 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
     this before spawning the run, but KB state could change between that check and
     this one actually executing on a background thread.
 
+    `relevance_model` runs the chapter-relevance screen; `model` runs the mapping.
+
     Returns:
         (final_csv: str, checkpoint_path: str | None, usage: dict, cost_usd: float,
-         chapter_breakdown: dict) — chapter_breakdown partitions every sibling chapter
-        into "chapters_with_edges", "chapters_screened_no_edges", and
+         chapter_breakdown: dict, screen: dict) — usage/cost_usd cover the screen AND the
+        mapping; screen = {"usage", "cost_usd"} is the screen's share, so run records can
+        attribute it to chapter_relevance. chapter_breakdown partitions every sibling
+        chapter into "chapters_with_edges", "chapters_screened_no_edges", and
         "chapters_excluded_by_screen" ({} in the early-return cases below, where no
         sibling analysis ever ran).
     """
@@ -332,7 +355,7 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
                "L1 prerequisites mapped first.")
         print(f"[orchestrator] {msg}")
         emit("agent_completed", {"agent": "PrerequisitesL2", "output": {"error": msg, "checkpoint": None}})
-        return "", None, {}, 0.0, {}
+        return "", None, {}, 0.0, {}, {"usage": {}, "cost_usd": 0.0}
 
     try:
         target_rows = parse_csv(load_confirmed_csv(board, subject, grade, chapter))
@@ -342,7 +365,7 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
             "agent": "PrerequisitesL2",
             "output": {"error": f"target CSV unreadable: {e}", "checkpoint": None},
         })
-        return "", None, {}, 0.0, {}
+        return "", None, {}, 0.0, {}, {"usage": {}, "cost_usd": 0.0}
 
     sibling_rows_by_chapter = load_confirmed_csvs_for_grade_subject(
         board, subject, grade, exclude_chapter=chapter
@@ -369,7 +392,7 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
     cost = 0.0
     try:
         screen_result = screen_chapter_relevance(
-            chapter, target_concepts, target_skills, sibling_items, model=model
+            chapter, target_concepts, target_skills, sibling_items, model=relevance_model
         )
         relevant_chapters = set(screen_result.get("relevant_chapters", []))
         screen_warnings = screen_result.get("warnings", [])
@@ -384,6 +407,7 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
         screen_warnings = [f"chapter_relevance screen error: {e}"]
 
     candidate_pool = {ch: sibling_items[ch] for ch in relevant_chapters if ch in sibling_items}
+    screen = {"usage": dict(usage), "cost_usd": cost}
 
     try:
         result = run_prerequisite_l2(
@@ -446,9 +470,10 @@ def _run_l2_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
             "usage":              usage,
             "cost_usd":           cost,
             "model":              model,
+            "relevance_model":    relevance_model,
         },
     })
-    return final_csv, checkpoint, usage, cost, chapter_breakdown
+    return final_csv, checkpoint, usage, cost, chapter_breakdown, screen
 
 
 def run_l2_prerequisite_only(
@@ -485,9 +510,10 @@ def run_l2_prerequisite_only(
     })
     emit("attempt_started", {"attempt": 1, "max_attempts": 1})
 
-    final_csv, checkpoint, prereq_usage, prereq_cost, chapter_breakdown = _run_l2_prerequisite_phase(
+    final_csv, checkpoint, prereq_usage, prereq_cost, chapter_breakdown, screen = _run_l2_prerequisite_phase(
         board, subject, grade, chapter, emit=emit,
         model=_model_for(models, "prerequisite_l2"),
+        relevance_model=_model_for(models, "chapter_relevance"),
     )
 
     if not checkpoint:
@@ -499,7 +525,14 @@ def run_l2_prerequisite_only(
         mode="l2_prerequisite_only",
     )
     builder.add_pipeline_usage(
-        "prerequisite_l2", prereq_usage, prereq_cost, model=_model_for(models, "prerequisite_l2"),
+        "chapter_relevance", screen["usage"], screen["cost_usd"],
+        model=_model_for(models, "chapter_relevance"),
+    )
+    builder.add_pipeline_usage(
+        "prerequisite_l2",
+        {k: (prereq_usage.get(k) or 0) - (screen["usage"].get(k) or 0) for k in prereq_usage},
+        prereq_cost - screen["cost_usd"],
+        model=_model_for(models, "prerequisite_l2"),
         extra=chapter_breakdown,
     )
     builder.finalize(
@@ -525,7 +558,8 @@ def run_l2_prerequisite_only(
     return {"passed": True, "csv": final_csv, "checkpoint": checkpoint}
 
 
-def _run_l3_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAULT_MODEL):
+def _run_l3_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAULT_MODEL,
+                               relevance_model=JEV_MODEL):
     """
     Run Level-3 (cross-grade, same subject) prerequisite mapping for one target
     chapter, persist the enriched CSV checkpoint, and emit PrerequisitesL3 agent
@@ -541,10 +575,13 @@ def _run_l3_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
     chapter_relevance screen is run ONCE PER EARLIER GRADE (same screen() function
     L2 uses, unmodified) rather than once over the full multi-grade history or once
     per chapter pair — this is the actual token-saving mechanism for L3.
+    `relevance_model` runs those screens; `model` runs the mapping.
 
     Returns:
         (final_csv: str, checkpoint_path: str | None, usage: dict, cost_usd: float,
-         chapter_breakdown: dict) — chapter_breakdown partitions every earlier-grade
+         chapter_breakdown: dict, screen: dict) — usage/cost_usd cover the screens AND
+        the mapping; screen = {"usage", "cost_usd"} is the screens' share, so run records
+        can attribute it to chapter_relevance. chapter_breakdown partitions every earlier-grade
         chapter into "chapters_with_edges", "chapters_screened_no_edges", and
         "chapters_excluded_by_screen" (each a list of {"grade", "chapter"} dicts,
         since chapter names are not unique across grades), plus "prior_grade_count"
@@ -563,7 +600,7 @@ def _run_l3_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
                "there are no earlier grades to map against yet.")
         print(f"[orchestrator] {msg}")
         emit("agent_completed", {"agent": "PrerequisitesL3", "output": {"error": msg, "checkpoint": None}})
-        return "", None, {}, 0.0, {}
+        return "", None, {}, 0.0, {}, {"usage": {}, "cost_usd": 0.0}
 
     try:
         target_rows = parse_csv(load_confirmed_csv(board, subject, grade, chapter))
@@ -573,7 +610,7 @@ def _run_l3_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
             "agent": "PrerequisitesL3",
             "output": {"error": f"target CSV unreadable: {e}", "checkpoint": None},
         })
-        return "", None, {}, 0.0, {}
+        return "", None, {}, 0.0, {}, {"usage": {}, "cost_usd": 0.0}
 
     # Every chapter in every earlier grade of the same subject is a candidate
     # prerequisite source — same philosophy as L2's sibling scan: don't be clever
@@ -601,7 +638,7 @@ def _run_l3_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
     for g, sibling_items in sibling_items_by_grade.items():
         try:
             screen_result = screen_chapter_relevance(
-                chapter, target_concepts, target_skills, sibling_items, model=model
+                chapter, target_concepts, target_skills, sibling_items, model=relevance_model
             )
             relevant_chapters_by_grade[g] = set(screen_result.get("relevant_chapters", []))
             screen_warnings.extend(screen_result.get("warnings", []))
@@ -620,6 +657,7 @@ def _run_l3_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
         for g, relevant in relevant_chapters_by_grade.items()
     }
     candidate_pool = {g: chapters for g, chapters in candidate_pool.items() if chapters}
+    screen = {"usage": dict(usage), "cost_usd": cost}
 
     try:
         result = run_prerequisite_l3(
@@ -695,9 +733,10 @@ def _run_l3_prerequisite_phase(board, subject, grade, chapter, emit, model=DEFAU
             "usage":              usage,
             "cost_usd":           cost,
             "model":              model,
+            "relevance_model":    relevance_model,
         },
     })
-    return final_csv, checkpoint, usage, cost, chapter_breakdown
+    return final_csv, checkpoint, usage, cost, chapter_breakdown, screen
 
 
 def run_l3_prerequisite_only(
@@ -735,9 +774,10 @@ def run_l3_prerequisite_only(
     })
     emit("attempt_started", {"attempt": 1, "max_attempts": 1})
 
-    final_csv, checkpoint, prereq_usage, prereq_cost, chapter_breakdown = _run_l3_prerequisite_phase(
+    final_csv, checkpoint, prereq_usage, prereq_cost, chapter_breakdown, screen = _run_l3_prerequisite_phase(
         board, subject, grade, chapter, emit=emit,
         model=_model_for(models, "prerequisite_l3"),
+        relevance_model=_model_for(models, "chapter_relevance"),
     )
 
     if not checkpoint:
@@ -749,7 +789,14 @@ def run_l3_prerequisite_only(
         mode="l3_prerequisite_only",
     )
     builder.add_pipeline_usage(
-        "prerequisite_l3", prereq_usage, prereq_cost, model=_model_for(models, "prerequisite_l3"),
+        "chapter_relevance", screen["usage"], screen["cost_usd"],
+        model=_model_for(models, "chapter_relevance"),
+    )
+    builder.add_pipeline_usage(
+        "prerequisite_l3",
+        {k: (prereq_usage.get(k) or 0) - (screen["usage"].get(k) or 0) for k in prereq_usage},
+        prereq_cost - screen["cost_usd"],
+        model=_model_for(models, "prerequisite_l3"),
         extra=chapter_breakdown,
     )
     builder.finalize(
@@ -952,7 +999,8 @@ def _doctor_and_record(
             "concept_skill_map": csm_data,
         },
     })
-    doc_eval = run_eval(doctored_csv, board, subject, grade, chapter, model=eval_model)
+    doc_eval = run_eval(doctored_csv, board, subject, grade, chapter, model=eval_model,
+                        coverage_model=_model_for(models, "eval_coverage"))
     dc1, dc2 = doc_eval["check1"], doc_eval["check2"]
 
     # ── Regression guard ───────────────────────────────────────────────────────
@@ -1012,7 +1060,7 @@ def _doctor_and_record(
             },
             "usage":    doc_eval.get("usage"),
             "cost_usd": doc_eval.get("cost_usd"),
-            "model":    eval_model,
+            "model":    _eval_models_label(models),
         },
     })
     print(f"[orchestrator] Doctored CSV re-verify — "
@@ -1180,7 +1228,8 @@ def _rules_doctor_and_record(
             "concept_skill_map": csm_data,
         },
     })
-    doc_eval = run_eval(doctored_csv, board, subject, grade, chapter, model=eval_model)
+    doc_eval = run_eval(doctored_csv, board, subject, grade, chapter, model=eval_model,
+                        coverage_model=_model_for(models, "eval_coverage"))
     dc1, dc2 = doc_eval["check1"], doc_eval["check2"]
 
     # ── Regression guard ───────────────────────────────────────────────────────
@@ -1222,7 +1271,7 @@ def _rules_doctor_and_record(
             },
             "usage":    doc_eval.get("usage"),
             "cost_usd": doc_eval.get("cost_usd"),
-            "model":    eval_model,
+            "model":    _eval_models_label(models),
         },
     })
     print(f"[orchestrator] Rules-doctored CSV re-verify — "
@@ -1474,7 +1523,8 @@ def run_pipeline(
         })
 
         eval_model = _model_for(models, "eval")
-        eval_result = run_eval(current_csv, board, subject, grade, chapter, model=eval_model)
+        eval_result = run_eval(current_csv, board, subject, grade, chapter, model=eval_model,
+                               coverage_model=_model_for(models, "eval_coverage"))
         c1 = eval_result["check1"]
         c2 = eval_result["check2"]
 
@@ -1502,7 +1552,7 @@ def run_pipeline(
                 },
                 "usage":    eval_result.get("usage"),
                 "cost_usd": eval_result.get("cost_usd"),
-                "model":    eval_model,
+                "model":    _eval_models_label(models),
             },
         })
 

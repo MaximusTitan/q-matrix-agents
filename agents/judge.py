@@ -12,13 +12,20 @@ pedagogical quality (not size), per the rubric in prompts/judge_prompt.md.
 Input:  candidates, concept_skill_map, universal_rules, board, subject, grade, chapter
 Output: dict {"chosen_id", "rationale", "candidates": [{id, verdict, note, strengths, concerns}]}
 
+With an evaluation model (skills.evaluate.is_evaluation_model) each candidate is scored
+independently on the judge prompt's priority criteria (one rubric question each), the
+weighted mean picks the winner, and rationale/strengths/concerns are assembled from
+those scores — no free text is generated.
+
 Skills used:
-    llm — call_llm
+    llm      — call_llm (chat models)
+    evaluate — evaluate_many (evaluation models)
 """
 
 import json
 import os
 from skills.llm import call_llm, add_usage, DEFAULT_MODEL
+from skills import evaluate
 
 _PROMPT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -68,6 +75,97 @@ def _fallback_choice(candidates: list[dict], reason: str, usage: dict, cost_usd:
     }
 
 
+# Criteria in prompts/judge_prompt.md priority order: (key, label, weight, question, levels).
+_RUBRIC = [
+    ("coverage", "faithful CSM coverage", 0.4,
+     "How faithfully does `candidate_csv` cover every concept and skill in "
+     "`expected_concept_skill_map`, without over-decomposition, duplication or padding?",
+     ["poor: expected items missing, or heavy duplication/padding",
+      "fair: covered, but with noticeable over-decomposition or duplicated rows",
+      "good: covered with only minor redundancy",
+      "excellent: every expected item covered once, with no padding"]),
+    ("boundaries", "concept boundaries", 0.3,
+     "Do the concepts in `candidate_csv` match the intent of the expected concepts, "
+     "without merging distinct concepts into buckets or splitting one concept into several?",
+     ["poor: many merged buckets or artificial splits",
+      "fair: several boundary problems",
+      "good: one or two boundary problems",
+      "excellent: concept boundaries match the expected map"]),
+    ("skill_quality", "skill quality", 0.2,
+     "Are the skills in `candidate_csv` concrete, distinct and pedagogically meaningful, "
+     "with any skill beyond the expected map clearly justified?",
+     ["poor: vague, overlapping or unjustified skills",
+      "fair: many skills vague or unjustified",
+      "good: mostly concrete and distinct",
+      "excellent: every skill concrete, distinct and justified"]),
+    ("focus", "no extraneous content", 0.1,
+     "Is `candidate_csv` free of off-syllabus or filler rows?",
+     ["poor: many filler or off-syllabus rows",
+      "fair: several filler rows",
+      "good: one or two filler rows",
+      "excellent: no filler or off-syllabus rows"]),
+]
+_MAX_SCORE = len(_RUBRIC[0][4]) - 1
+# Weighted means closer than this count as a tie, broken by the judge prompt's tie-breaker
+# (generated over doctored), then earliest cycle.
+_TIE_MARGIN = 0.05
+
+
+def _judge_with_evaluator(candidates, concept_skill_map, model):
+    """Score each candidate on _RUBRIC and pick the best. Same return shape as run()."""
+    csm = {
+        "concepts": (concept_skill_map or {}).get("concepts", []),
+        "skills":   (concept_skill_map or {}).get("skills", []),
+    }
+    requests = [
+        (
+            {"expected_concept_skill_map": csm, "candidate_csv": c["csv"]},
+            {f"{i}_{key}": evaluate.score(question, levels)
+             for key, _, _, question, levels in _RUBRIC},
+        )
+        for i, c in enumerate(candidates)
+    ]
+    try:
+        answers, usage, cost = evaluate.evaluate_many(requests, model)
+    except (evaluate.EvaluationError, ValueError) as e:
+        print(f"[judge] Evaluation failed ({e}) — falling back deterministically")
+        return _fallback_choice(candidates, f"evaluation failed: {e}", {}, 0.0)
+
+    scored = []
+    for i, c in enumerate(candidates):
+        dims = {key: float(answers[f"{i}_{key}"]["score"]) for key, *_ in _RUBRIC}
+        total = sum(weight * dims[key] for key, _, weight, *_ in _RUBRIC)
+        scored.append((c, dims, total))
+
+    best_total = max(total for _, _, total in scored)
+    contenders = [(c, dims, total) for c, dims, total in scored if best_total - total <= _TIE_MARGIN]
+    chosen = min(contenders, key=lambda t: (t[0].get("source") != "generated", t[0].get("cycle", 0)))[0]
+
+    def fmt(label, value):
+        return f"{label} {value:.1f}/{_MAX_SCORE}"
+
+    out = []
+    for c, dims, total in scored:
+        labelled = [(label, dims[key]) for key, label, *_ in _RUBRIC]
+        out.append({
+            "id":        c["id"],
+            "verdict":   "chosen" if c["id"] == chosen["id"] else "rejected",
+            "note":      f"Weighted rubric score {total:.2f}/{_MAX_SCORE}.",
+            "strengths": [fmt(label, v) for label, v in labelled if v >= _MAX_SCORE - 0.5],
+            "concerns":  [fmt(label, v) for label, v in labelled if v < _MAX_SCORE - 1.5],
+        })
+    totals = ", ".join(f"{c['id']}={total:.2f}" for c, _, total in scored)
+    tie_note = " (tie broken: generated over doctored, then earliest cycle)" if len(contenders) > 1 else ""
+    print(f"[judge] Chose {chosen['id']}")
+    return {
+        "chosen_id": chosen["id"],
+        "rationale": f"Highest weighted rubric score among passing candidates: {totals}{tie_note}.",
+        "candidates": out,
+        "usage": usage,
+        "cost_usd": cost,
+    }
+
+
 def run(
     candidates: list[dict],
     concept_skill_map: dict,
@@ -97,6 +195,9 @@ def run(
         deterministically if the LLM output is unusable).
     """
     print(f"[judge] Choosing among {len(candidates)} passing candidate(s)")
+
+    if evaluate.is_evaluation_model(model):
+        return _judge_with_evaluator(candidates, concept_skill_map, model)
 
     valid_ids = {c["id"] for c in candidates}
 

@@ -165,19 +165,15 @@ def compute_model_performance(records: list[dict]) -> dict:
                 passed=passed, cost_usd=cost, usage=usage, date=date, rows=rows
             )
 
-        # ── Eval (Check 1 + Check 2 combined) ──────────────────────────────
-        checks = []
-        for g in gens:
-            if g.get("check1"):
-                checks.append(g["check1"])
-            if g.get("check2"):
-                checks.append(g["check2"])
-        eval_model = _first_model(checks)
-        if eval_model:
-            usage, cost = _sum_attempt_usage_cost(checks)
-            bucket("eval", eval_model).add_run(
-                passed=passed, cost_usd=cost, usage=usage, date=date, rows=None
-            )
+        # ── Eval: Check 1 → "eval", Check 2 → "eval_coverage" (separate models) ──
+        for check_key, agent_key in (("check1", "eval"), ("check2", "eval_coverage")):
+            checks = [g[check_key] for g in gens if g.get(check_key)]
+            eval_model = _first_model(checks)
+            if eval_model:
+                usage, cost = _sum_attempt_usage_cost(checks)
+                bucket(agent_key, eval_model).add_run(
+                    passed=passed, cost_usd=cost, usage=usage, date=date, rows=None
+                )
 
         # ── Doctor / Rules Doctor (split by kind) ──────────────────────────
         doctors = [d for a in attempts for d in (a.get("doctors") or [])]
@@ -207,10 +203,11 @@ def compute_model_performance(records: list[dict]) -> dict:
                 usage=judge.get("usage") or {}, date=date, rows=None,
             )
 
-        # ── Map Extraction / Prerequisite L1 / Prerequisite L2 / Prerequisite L3
+        # ── Map Extraction / Prerequisite L1 / L2 / L3 / Chapter Relevance
         #    (pipeline-level, not per-attempt) ──────────────────────────────
         pipeline_agents = rec.get("pipeline_agents") or {}
-        for agent_key in ("map_extraction", "prerequisite", "prerequisite_l2", "prerequisite_l3"):
+        for agent_key in ("map_extraction", "prerequisite", "prerequisite_l2", "prerequisite_l3",
+                          "chapter_relevance"):
             entry = pipeline_agents.get(agent_key)
             if entry and entry.get("model"):
                 bucket(agent_key, entry["model"]).add_run(

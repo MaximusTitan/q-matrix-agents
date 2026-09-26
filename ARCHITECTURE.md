@@ -169,15 +169,15 @@ graph TD
 |---|---|---|---|
 | **Map Extraction** | Extract flat `concepts` + verb-led `skills` from `chapter.pdf` | `concept-skill-map.json` written to KB | free-text JSON |
 | **Generator** | Produce curriculum CSV rows from docs + prompt/rules; edit-in-place on retry | `{csv, input_type, rows}` | forced tool call (`submit_concept_skill_rows`), 3 retries |
-| **Eval** | Check 1 (content rules, LLM + deterministic structural checks) and Check 2 (CSM coverage) **in parallel** | `{check1, check2, passed}` | Check 1 forced tool call; Check 2 via `skills/diff.py:diff_full` |
+| **Eval** | Check 1 (content rules, model + deterministic structural checks) and Check 2 (CSM coverage) **in parallel** | `{check1, check2, passed}` | Check 1 (default Sonnet): forced tool call; on Jev, one yes/no per (rule, row) / (rule, concept) with counts in code. Check 2 (default Jev): one yes/no per expected item + a choice naming its covering item(s); on a chat model, `skills/diff.py:diff_full`'s two-pass LLM diff |
 | **Revision** | Rewrite the generation prompt so a reported failure won't recur; subject vs grade mode | `(revised_prompt, …)` — held **in memory only** | single free-text call |
 | **Doctor** | Surgically patch a CSV that passed C1 but failed C2 (add missing coverage) | patched `{csv, rows}` | forced tool call, 2 attempts |
 | **Rules Doctor** | Mirror of Doctor: fix C1 rule violations without losing C2 coverage | patched `{csv, rows}` | forced tool call, 2 attempts |
-| **Judge** | Choose the single best CSV when ≥2 candidates already pass both checks | `{chosen_id, rationale, candidates[]}` | free-text JSON + deterministic fallback |
-| **Prerequisites (L1)** | Map within-chapter concept→concept and skill→skill "comes-before" edges | rows enriched with 2 prereq columns | free-text JSON, 2 attempts; never raises |
-| **Chapter Relevance** | Recall-biased pre-filter: given target chapter + sibling titles/concepts/skills, flag siblings plausible enough for the full L2 pass | `{relevant_chapters, warnings}` | single free-text JSON call |
-| **Prerequisite (L2)** | Given a target chapter's CSV + the relevance-screened candidate pool from other chapters in the same grade+subject, map cross-chapter prerequisite edges | rows enriched with 2 cross-chapter prereq columns | free-text JSON, 2 attempts; never raises |
-| **Prerequisite (L3)** | Given a target chapter's CSV + the relevance-screened candidate pool from chapters in *earlier grades* of the same subject (or an alias subject), map cross-grade prerequisite edges | rows enriched with 2 prior-grade prereq columns | free-text JSON, 2 attempts; never raises |
+| **Judge** | Choose the single best CSV when ≥2 candidates already pass both checks | `{chosen_id, rationale, candidates[]}` | Default (Jev): four rubric scores per candidate, weighted; rationale assembled from the scores. Chat model: free-text JSON. Deterministic fallback either way |
+| **Prerequisites (L1)** | Map within-chapter concept→concept and skill→skill "comes-before" edges | rows enriched with 2 prereq columns | Default (Sonnet): free-text JSON, 2 attempts. On Jev: one yes/no per same-kind pair, cycles broken in code. Never raises |
+| **Chapter Relevance** | Recall-biased pre-filter: given target chapter + sibling titles/concepts/skills, flag siblings plausible enough for the full L2 pass | `{relevant_chapters, warnings}` | Default (Jev): one yes/no per sibling chapter. Chat model: single free-text JSON call |
+| **Prerequisite (L2)** | Given a target chapter's CSV + the relevance-screened candidate pool from other chapters in the same grade+subject, map cross-chapter prerequisite edges | rows enriched with 2 cross-chapter prereq columns | Default (Sonnet): free-text JSON, 2 attempts. On Jev: per-candidate screen, then one yes/no per surviving pair. Never raises |
+| **Prerequisite (L3)** | Given a target chapter's CSV + the relevance-screened candidate pool from chapters in *earlier grades* of the same subject (or an alias subject), map cross-grade prerequisite edges | rows enriched with 2 prior-grade prereq columns | Default (Sonnet): free-text JSON, 2 attempts. On Jev: as L2, plus a "long-assumed foundations are not prerequisites" criterion. Never raises |
 
 The orchestrator itself makes **no LLM calls** — it is pure control flow.
 
@@ -397,27 +397,45 @@ sequenceDiagram
 
 ## 7. Model routing & the LLM gateway
 
-All agents share one thin wrapper, `skills/llm.py`, pointed at the **Vercel AI Gateway**
-via the OpenAI Chat Completions-compatible shape (`base_url=https://ai-gateway.vercel.sh/v1`).
-That shape lets a single client hit any provider — Anthropic, OpenAI, Google, Meta,
-Mistral, DeepSeek — with identical forced-tool-choice behavior.
+Agents reach the **Vercel AI Gateway** through one of two thin wrappers:
+
+- `skills/llm.py` — the OpenAI Chat Completions-compatible shape
+  (`base_url=https://ai-gateway.vercel.sh/v1`), for agents that write something. That
+  shape lets a single client hit any chat provider — Anthropic, OpenAI, Google, Meta,
+  Mistral, DeepSeek — with identical forced-tool-choice behavior.
+- `skills/evaluate.py` — the Gateway's `POST /v1/evaluate` endpoint, for agents that
+  decide something. Evaluation models (TypeSafe's Jev, `typesafe-ai/jev`) do not generate
+  text; they answer typed questions about a shared `state` — `boolean` (a probability),
+  `choice` (one of ≤255 named options) or `score` (a rung on a rubric). Each decision
+  agent therefore splits its judgment into many small questions and assembles its usual
+  output (edges, feedback strings, a verdict) in code. Jev's limit is 32k tokens for the
+  state plus the longest question; `call_evaluate` refuses an oversized request before
+  sending it. Questions sharing a state are batched (`MAX_QUESTIONS_PER_REQUEST`) and
+  requests run in parallel. Decision thresholds are named constants in each agent.
 
 - **Model is per-call.** `run_pipeline(models={...})` threads an agent→model dict; each
-  agent key falls back to `orchestrator.AGENT_DEFAULT_MODELS`. There are ten keys
-  (`AGENT_KEYS`) — Chapter Relevance has none and inherits the model of the L2/L3 run that
-  invokes it.
+  agent key falls back to `orchestrator.AGENT_DEFAULT_MODELS`. There are twelve keys
+  (`AGENT_KEYS`). `eval` runs Check 1 and `eval_coverage` runs Check 2; a caller that sets
+  only `eval` gets it for both. `chapter_relevance` runs the L2/L3 screens. Every decision
+  agent has both a chat-model path and an evaluation-model path, picked by model id
+  (`skills.evaluate.is_evaluation_model`).
 
   | Default model | Agents |
   |---|---|
-  | `anthropic/claude-sonnet-5` | `map_extraction`, `generator`, `eval` (fuller CSVs, reliable eval gate), `prerequisite`, `prerequisite_l2`, `prerequisite_l3` (mini was observed asserting or dropping prereq edges its own reasoning contradicted) |
-  | `openai/gpt-5.4-mini` | `doctor`, `rules_doctor`, `revision`, `judge` |
+  | `anthropic/claude-sonnet-5` | `map_extraction`, `generator`, `doctor`, `rules_doctor`, `revision`, `eval` (Check 1), `prerequisite`, `prerequisite_l2`, `prerequisite_l3` |
+  | `typesafe-ai/jev` | `eval_coverage` (Check 2), `judge`, `chapter_relevance` |
 
-  `prerequisite_l3` shares L2's default pending its own evaluation. The inline comments in
-  `orchestrator.py` record the specific chapters each choice was calibrated on.
+  Jev is the default only where it held up in calibration against Sonnet 5 verdicts
+  (2026-09-27: 63 escalated attempts with stored verdicts, 12 confirmed CBSE EVS Grade 3
+  chapters). Check 2 agreed on pass/fail 81% of the time. Check 1 did not separate
+  passing from failing CSVs at any threshold, and L1 prerequisites recovered only 18% of
+  stored edges, so both stay on Sonnet; the numbers are recorded beside each threshold
+  constant and in `orchestrator.py`. Prerequisite edges stay **unverified** on any model.
 - **Costing is free.** The Gateway returns a pre-computed `cost` per call, so there is no
   local price table — every model, any provider, priced automatically.
-- `call_llm` → free text; `call_llm_structured` → forced single tool call returning JSON.
-  Retries (`RateLimitError`/`InternalServerError`) live here, not in agent code.
+- `call_llm` → free text; `call_llm_structured` → forced single tool call returning JSON;
+  `call_evaluate` / `evaluate_many` → typed answers. Retries (rate limits, server errors)
+  live in these wrappers, not in agent code.
 
 ---
 

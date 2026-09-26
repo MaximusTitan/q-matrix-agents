@@ -19,13 +19,26 @@ excluded chapter permanently loses any real prerequisite relationship it might c
 Input:  target_chapter, target_concepts, target_skills, sibling_items (chapter -> {concepts, skills})
 Output: dict {"relevant_chapters", "warnings", "usage", "cost_usd"}
 
+With an evaluation model (skills.evaluate.is_evaluation_model) the same screen is one
+yes/no question per sibling chapter, each asked against a state holding only the target
+and that one sibling (unrelated chapters in the state would act as distractors). A
+sibling is kept at a deliberately low probability, RELEVANCE_THRESHOLD, for recall.
+
 Skills used:
-    llm — call_llm
+    llm      — call_llm (chat models)
+    evaluate — evaluate_many (evaluation models)
 """
 
 import json
 import os
 from skills.llm import call_llm, add_usage, DEFAULT_MODEL
+from skills import evaluate
+
+# Calibrated 2026-09-27 against the stored Sonnet 5 screens of 12 CBSE EVS Grade 3 L2 runs
+# (132 target/sibling pairs): 0.3 kept 62/66 of the chapters Sonnet kept and 6/6 of those
+# that went on to contribute edges, while keeping 105 pairs to Sonnet's 66 — a looser
+# screen, so the downstream L2/L3 mapping sees larger candidate pools.
+RELEVANCE_THRESHOLD = 0.3
 
 _PROMPT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -48,6 +61,48 @@ def _parse_llm_json(raw: str) -> dict | None:
     except json.JSONDecodeError as e:
         print(f"[chapter_relevance] LLM returned invalid JSON. Error: {e}\nRaw:\n{raw[:500]}")
         return None
+
+
+def _screen_with_evaluator(target_chapter, target_concepts, target_skills, sibling_items, model):
+    """One recall-biased yes/no per sibling chapter. Same return shape and failure mode as screen()."""
+    print(f"[chapter_relevance] Screening {len(sibling_items)} sibling chapter(s) "
+          f"for relevance to {target_chapter!r} (evaluation model)")
+    target = {"chapter": target_chapter, "concepts": target_concepts, "skills": target_skills}
+    siblings = list(sibling_items.items())
+    requests = [
+        (
+            {"target_chapter": target,
+             "other_chapter": {"chapter": chapter, "concepts": items.get("concepts", []),
+                               "skills": items.get("skills", [])}},
+            {f"s{i}": evaluate.boolean(
+                "Could any concept or skill in `other_chapter` plausibly be something a "
+                "student must learn before some concept or skill in `target_chapter`? "
+                "Judge by meaning, not by shared words.",
+                true="At least one item in other_chapter is plausibly a specific prerequisite "
+                     "of an item in target_chapter, even if worded differently.",
+                false="Nothing in other_chapter is needed to learn target_chapter; the chapters "
+                      "only share words or a broad subject.",
+            )},
+        )
+        for i, (chapter, items) in enumerate(siblings)
+    ]
+    try:
+        answers, usage, cost = evaluate.evaluate_many(requests, model)
+    except (evaluate.EvaluationError, ValueError) as e:
+        print(f"[chapter_relevance] Evaluation failed: {e}")
+        return {
+            "relevant_chapters": [],
+            "warnings": [f"Chapter relevance screen failed ({e}) — no candidate chapters."],
+            "usage": {},
+            "cost_usd": 0.0,
+        }
+
+    relevant = [
+        chapter for i, (chapter, _) in enumerate(siblings)
+        if evaluate.probability(answers[f"s{i}"]) >= RELEVANCE_THRESHOLD
+    ]
+    print(f"[chapter_relevance] {len(relevant)}/{len(sibling_items)} chapter(s) flagged relevant")
+    return {"relevant_chapters": relevant, "warnings": [], "usage": usage, "cost_usd": cost}
 
 
 def screen(
@@ -81,6 +136,9 @@ def screen(
     """
     if not sibling_items:
         return {"relevant_chapters": [], "warnings": [], "usage": {}, "cost_usd": 0.0}
+
+    if evaluate.is_evaluation_model(model):
+        return _screen_with_evaluator(target_chapter, target_concepts, target_skills, sibling_items, model)
 
     other_chapters_block = "\n\n".join(
         f'CHAPTER: "{chapter}"\n'

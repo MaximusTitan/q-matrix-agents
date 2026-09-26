@@ -3,3 +3,4 @@ pdfplumber
 python-dotenv
 fastapi
 uvicorn
+httpx

@@ -376,6 +376,49 @@ def load_rules(board: str, subject: str, grade: str) -> str:
     return read_file(universal_rules)
 
 
+_RULE_HEADING = re.compile(r"^\*\*(R-[A-Z]+\d+)\s+—\s+(.+?)\*\*\s*$")
+
+
+def load_rules_structured(board: str, subject: str, grade: str) -> dict:
+    """
+    Parse the same rules load_rules() returns into individual rules, for checkers that ask
+    about one rule at a time.
+
+    Universal rules are `**R-XX — Title**` headings followed by body text, ending at the
+    next heading, a `---` rule, or a `##` section. Grade rules are the `- <reason>`
+    bullets written by append_grade_rule (they carry no rule ID).
+
+    Returns:
+        {"universal": {rule_id: {"title": str, "text": str}}, "grade": [str, ...]}
+    """
+    universal_path = _universal_rules_path()
+    if not file_exists(universal_path):
+        raise FileNotFoundError(f"universal_rules.md not found at: {universal_path}")
+
+    universal: dict[str, dict] = {}
+    current = None
+    for line in read_file(universal_path).splitlines():
+        heading = _RULE_HEADING.match(line.strip())
+        if heading:
+            current = heading.group(1)
+            universal[current] = {"title": heading.group(2).strip(), "body": []}
+        elif line.startswith("## ") or line.strip() == "---":
+            current = None
+        elif current:
+            universal[current]["body"].append(line.strip())
+    for rule in universal.values():
+        rule["text"] = " ".join(part for part in rule.pop("body") if part)
+
+    grade_rules = []
+    grade_path = _grade_rules_path(board, subject, grade)
+    if file_exists(grade_path):
+        grade_rules = [
+            line.strip()[2:].strip() for line in read_file(grade_path).splitlines()
+            if line.strip().startswith("- ") and line.strip()[2:].strip()
+        ]
+    return {"universal": universal, "grade": grade_rules}
+
+
 def append_grade_rule(board: str, subject: str, grade: str, reason: str) -> None:
     """
     Append a human rejection reason as a new rule in the grade-level ruleset.
