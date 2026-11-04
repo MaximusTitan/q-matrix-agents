@@ -396,7 +396,7 @@ escalations/{board}/{subject}/{grade}/{chapter}/{date}/
 ## Knowledge Graph Export
 
 Once a corpus in your KB has prerequisites mapped, `scripts/export_graph.py` turns its
-per-chapter `confirmed_curriculum.csv` files into a concept-level knowledge graph as three
+per-chapter `confirmed_curriculum.csv` files into a concept-level knowledge graph as four
 static JSON files:
 
 ```bash
@@ -412,11 +412,12 @@ python scripts/export_graph.py --out /path/to/graph/site/public/graph --check
 | `graph-core.json` | nodes and links — everything needed to draw the graph |
 | `concept-details.json` | per-concept skills and prerequisite rationales, loaded on demand |
 | `meta.json` | provenance, subject/grade inventory, and the integrity report |
+| `skill-prereqs.json` | skill-to-skill prerequisite links (`{s, si, t, ti, l}`: skill `si` of concept `s` precedes skill `ti` of concept `t`, indexes into `concept-details.json`), with their own integrity counts. For consumers that need to know which skill of a prerequisite concept is needed; the drawn graph stays concept-level |
 
 The exporter is read-only and additive: it never writes to the KB. It resolves every
 prerequisite reference — free-text names scoped by `(grade, chapter)`, with no IDs anywhere
 in the KB — and mints a stable `sha1(subject|grade|chapter|concept)[:12]` id per concept.
-`--check` exits non-zero if any reference fails to resolve, which makes it usable as a CI
+`--check` exits non-zero if any concept or skill reference fails to resolve, which makes it usable as a CI
 guard on KB edits.
 
 Three things it handles that a naive CSV reader will get wrong, each found the hard way
