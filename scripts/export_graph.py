@@ -58,6 +58,13 @@ PREREQ_COLUMNS = [
 # independently judged and a reader may want to hide them.
 DERIVED_REASON_PREFIX = "Derived from skill prerequisite:"
 
+# A bridge replaces a chain through a concept removed by a curriculum clean-up:
+# A led to B only through the removed concept, so A -> B is added directly to
+# keep the learning order connected. Bridges self-identify by a reason that
+# starts "Bridged by <TICKET>:" (e.g. "Bridged by BEA-447: ...") and are flagged
+# "b": true so a reader can review or hide them.
+BRIDGE_REASON_RE = re.compile(r"^Bridged by [A-Z]+-\d+:")
+
 
 # ─── Identity ─────────────────────────────────────────────────────────────────
 
@@ -147,6 +154,10 @@ def parse_prereq_cell(raw: str) -> list[dict]:
 
 def is_derived(reason: str | None) -> bool:
     return bool(reason) and reason.lstrip().startswith(DERIVED_REASON_PREFIX)
+
+
+def is_bridge(reason: str | None) -> bool:
+    return bool(reason) and bool(BRIDGE_REASON_RE.match(reason.lstrip()))
 
 
 # ─── Load ─────────────────────────────────────────────────────────────────────
@@ -304,9 +315,12 @@ def build_edges(rows: list[dict], index: dict, stats: Counter) -> dict:
 
     Deduplicated: the same concept pair is often asserted by several rows (one
     per skill under the concept). The first occurrence wins for level, and any
-    edge with at least one non-derived assertion counts as authored.
+    edge with at least one non-derived assertion counts as authored. Likewise
+    an edge is a bridge ("b": true, only written when true) only if every
+    assertion of it is one.
     """
     edges: dict[tuple[str, str], dict] = {}
+    bridged: dict[tuple[str, str], bool] = {}
 
     for row in rows:
         target = index[(row["_subject"], row["_grade"], row["_chapter"])][row["_concept"]]
@@ -328,6 +342,11 @@ def build_edges(rows: list[dict], index: dict, stats: Counter) -> dict:
                     edges[key]["d"] = edges[key]["d"] and derived
                 else:
                     edges[key] = {"s": source, "t": target, "l": level, "d": derived}
+                bridged[key] = bridged.get(key, True) and is_bridge(ref["reason"])
+
+    for key, is_b in bridged.items():
+        if is_b:
+            edges[key]["b"] = True
 
     return edges
 
@@ -410,6 +429,7 @@ def build_skill_links(
         return None
 
     links: dict[tuple[str, int, str, int], dict] = {}
+    bridged: dict[tuple[str, int, str, int], bool] = {}
     for row in rows:
         if not row["_skill"]:
             continue
@@ -429,6 +449,12 @@ def build_skill_links(
                 if key not in links:
                     links[key] = {"s": source[0], "si": source[1],
                                   "t": target[0], "ti": target[1], "l": level}
+                # A bridge (see BRIDGE_REASON_RE) only if every assertion is one.
+                bridged[key] = bridged.get(key, True) and is_bridge(ref["reason"])
+
+    for key, is_b in bridged.items():
+        if is_b:
+            links[key]["b"] = True
 
     return [links[k] for k in sorted(links, key=lambda k: (k[2], k[3], k[0], k[1]))]
 
