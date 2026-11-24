@@ -445,6 +445,16 @@ so your own numbers will differ entirely:
 Edge direction is **source = prerequisite, target = dependent**, so arrows point forward in
 learning order. This inverts the CSV, where a row lists what it depends on.
 
+Links carry two flags, both read from how a reference's `reason` starts. A link gets a
+flag only if every row asserting it has that kind of reason:
+
+- **`d` (derived)**: the reason starts `Derived from skill prerequisite:`. The link was
+  lifted in code from a skill edge, not judged by an agent.
+- **`b` (bridge)**: the reason starts `Bridged by <TICKET>:`, e.g. `Bridged by BEA-447:`.
+  The link was added by hand during a curriculum clean-up: the source led to the target
+  only through a concept that was removed, so the two are joined directly to keep the
+  learning order connected. Written only when true, on both concept links and skill links.
+
 `graph-core.json` deliberately carries no timestamp, so re-exporting an unchanged KB is
 byte-identical and produces no diff.
 
