@@ -14,6 +14,8 @@ JSON contract that a browser can render without re-deriving any of it:
     graph-core.json      nodes + links, everything needed to draw a frame
     concept-details.json per-concept skills and prerequisite rationales
     meta.json            provenance, inventory, and the integrity report
+    skill-prereqs.json   skill-to-skill prerequisite links, for computation
+                         (the drawn graph stays concept-level)
 
 Usage:
     python scripts/export_graph.py --out ../q-matrix-graph-template/public/graph --check
@@ -369,6 +371,68 @@ def build_details(rows: list[dict], nodes: dict, index: dict, skills: dict) -> d
     return details
 
 
+def build_skill_links(
+    rows: list[dict], index: dict, skills: dict, stats: Counter,
+) -> list[dict]:
+    """
+    Resolve every skill-level prerequisite reference into a directed link
+    between two skills, addressed as (concept id, index into that concept's
+    skills in concept-details.json).
+
+    The drawn graph is concept-level; these links are for consumers that need
+    to know which skill of a prerequisite concept a skill actually depends on
+    (a concept link alone implicates all of them). Scoping mirrors
+    resolve_ref: L1 within the chapter, L2 within the grade, L3 by grade and
+    chapter with the subject aliases. A skill name taught under several
+    concepts of one chapter resolves to the lowest concept id, so the output
+    is deterministic. Deduplicated; the first level seen wins.
+    """
+    # (subject, grade, chapter) -> skill name -> (concept id, skill index)
+    skill_index: dict[tuple[str, str, str], dict[str, tuple[str, int]]] = defaultdict(dict)
+    for key, concepts in index.items():
+        for nid in sorted(concepts.values()):
+            for i, name in enumerate(skills.get(nid, [])):
+                skill_index[key].setdefault(name, (nid, i))
+
+    def resolve(level: int, row: dict, ref: dict) -> tuple[str, int] | None:
+        subject, grade, chapter = row["_subject"], row["_grade"], row["_chapter"]
+        if level == 1:
+            candidates = [(subject, grade, chapter)]
+        elif level == 2:
+            candidates = [(subject, grade, ref["chapter"])]
+        else:
+            subjects = (subject,) + _PREREQ_SUBJECT_ALIASES.get(subject, ())
+            candidates = [(s, ref["grade"], ref["chapter"]) for s in subjects]
+        for key in candidates:
+            hit = skill_index.get(key, {}).get(ref["name"])
+            if hit:
+                return hit
+        return None
+
+    links: dict[tuple[str, int, str, int], dict] = {}
+    for row in rows:
+        if not row["_skill"]:
+            continue
+        target_nid = index[(row["_subject"], row["_grade"], row["_chapter"])][row["_concept"]]
+        target = (target_nid, skills[target_nid].index(row["_skill"]))
+
+        for level, _, skill_col in PREREQ_COLUMNS:
+            for ref in parse_prereq_cell(row.get(skill_col)):
+                source = resolve(level, row, ref)
+                if source is None:
+                    stats[f"unresolved_skill_L{level}"] += 1
+                    continue
+                if source == target:
+                    stats[f"selfloop_skill_L{level}"] += 1
+                    continue
+                key = (source[0], source[1], target[0], target[1])
+                if key not in links:
+                    links[key] = {"s": source[0], "si": source[1],
+                                  "t": target[0], "ti": target[1], "l": level}
+
+    return [links[k] for k in sorted(links, key=lambda k: (k[2], k[3], k[0], k[1]))]
+
+
 def find_cycles(nodes: dict, edges: dict) -> dict:
     """
     Locate cycles via Tarjan's strongly-connected components.
@@ -490,6 +554,7 @@ def main() -> int:
     index, skills = aux["index"], aux["skills"]
     edges = build_edges(rows, index, stats)
     details = build_details(rows, nodes, index, skills)
+    skill_links = build_skill_links(rows, index, skills, stats)
 
     out_degree: Counter = Counter()
     in_degree: Counter = Counter()
@@ -511,8 +576,16 @@ def main() -> int:
         1 for e in link_list if nodes[e["s"]]["grade"] != nodes[e["t"]]["grade"]
     )
     isolated = sum(1 for n in node_list if n["inDeg"] == 0 and n["outDeg"] == 0)
-    unresolved = sum(v for k, v in stats.items() if k.startswith("unresolved"))
-    selfloops = sum(v for k, v in stats.items() if k.startswith("selfloop"))
+    # Concept-level counts only: meta.json's integrity report keeps its shape.
+    # Skill-link counts are reported in skill-prereqs.json itself.
+    unresolved = sum(
+        v for k, v in stats.items() if k.startswith("unresolved") and "_skill_" not in k
+    )
+    selfloops = sum(
+        v for k, v in stats.items() if k.startswith("selfloop") and "_skill_" not in k
+    )
+    skill_unresolved = sum(v for k, v in stats.items() if k.startswith("unresolved_skill"))
+    skill_selfloops = sum(v for k, v in stats.items() if k.startswith("selfloop_skill"))
     cycles = find_cycles(nodes, edges)
 
     chapters_per = Counter((s, g) for (s, g, _c) in index)
@@ -555,6 +628,23 @@ def main() -> int:
         {"schemaVersion": SCHEMA_VERSION, "details": details},
         args.pretty,
     )
+    # Kept out of meta.json (and so out of the dataset version consumers hash
+    # the first three files into); it describes itself instead.
+    skill_by_level = Counter(link["l"] for link in skill_links)
+    skill_bytes = write_json(
+        os.path.join(args.out, "skill-prereqs.json"),
+        {
+            "schemaVersion": SCHEMA_VERSION,
+            "links": skill_links,
+            "integrity": {
+                "links": len(skill_links),
+                "linksByLevel": {f"L{k}": v for k, v in sorted(skill_by_level.items())},
+                "unresolvedRefs": skill_unresolved,
+                "selfLoops": skill_selfloops,
+            },
+        },
+        args.pretty,
+    )
     meta_bytes = write_json(
         os.path.join(args.out, "meta.json"),
         {
@@ -584,9 +674,14 @@ def main() -> int:
     print(f"  graph-core.json      {core_bytes / 1024:8.1f} KB")
     print(f"  concept-details.json {details_bytes / 1024:8.1f} KB")
     print(f"  meta.json            {meta_bytes / 1024:8.1f} KB")
+    print(f"  skill-prereqs.json   {skill_bytes / 1024:8.1f} KB")
+    print(f"{len(skill_links)} skill links, by level: "
+          f"{ {f'L{k}': v for k, v in sorted(skill_by_level.items())} }")
+    print(f"  unresolved skill refs: {skill_unresolved}  self-loops: {skill_selfloops}")
 
-    if args.check and unresolved:
-        print(f"error: {unresolved} unresolved references", file=sys.stderr)
+    if args.check and (unresolved or skill_unresolved):
+        print(f"error: {unresolved} unresolved concept and {skill_unresolved} "
+              f"unresolved skill references", file=sys.stderr)
         return 1
     return 0
 
